@@ -35,13 +35,17 @@ type DashboardItem = {
   buttonText: string;
 };
 
-function withTimeout<T>(promise: Promise<T>, label: string, ms = 8000): Promise<T> {
+function withTimeout<T>(
+  promise: PromiseLike<T>,
+  label: string,
+  ms = 8000
+): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(new Error(`${label} timed out after ${ms / 1000}s`));
     }, ms);
 
-    promise
+    Promise.resolve(promise)
       .then((value) => {
         clearTimeout(timer);
         resolve(value);
@@ -242,7 +246,11 @@ export default function HomePage() {
         setUserEmail(user.email ?? null);
 
         const profileRes = await withTimeout(
-          supabase.from("profiles").select("role").eq("id", user.id).maybeSingle(),
+          supabase
+            .from("profiles")
+            .select("role")
+            .eq("id", user.id)
+            .maybeSingle(),
           "Home profile query"
         );
 
@@ -370,7 +378,7 @@ export default function HomePage() {
     return () => {
       isMounted = false;
     };
-  }, [authLoaded, canSeeDraftSchedules, nextSundayStr]);
+  }, [authLoaded, canSeeDraftSchedules, nextSundayStr, supabase]);
 
   const volunteerMap = useMemo(() => {
     return new Map(

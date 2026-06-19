@@ -13,13 +13,17 @@ type Profile = {
   role: AppRole | null;
 };
 
-function withTimeout<T>(promise: Promise<T>, label: string, ms = 8000): Promise<T> {
+function withTimeout<T>(
+  promise: PromiseLike<T>,
+  label: string,
+  ms = 8000
+): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(new Error(`${label} timed out after ${ms / 1000}s`));
     }, ms);
 
-    promise
+    Promise.resolve(promise)
       .then((value) => {
         clearTimeout(timer);
         resolve(value);
@@ -344,12 +348,14 @@ export default function TopNav() {
                     ) : null}
                   </span>
                 </Link>
-<Link
-  href="/my-notification-settings"
-  className={navClass("/my-notification-settings")}
->
-  Notification Settings
-</Link>
+
+                <Link
+                  href="/my-notification-settings"
+                  className={navClass("/my-notification-settings")}
+                >
+                  Notification Settings
+                </Link>
+
                 <Link
                   href="/request-lead-access"
                   className={navClass("/request-lead-access")}

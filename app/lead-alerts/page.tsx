@@ -109,7 +109,12 @@ export default function LeadAlertsPage() {
 
       if (alertsError) throw new Error(alertsError.message);
 
-      setNotifications((alertsData as Notification[]) ?? []);
+      const safeAlerts: Notification[] = (alertsData ?? []).map((alert) => ({
+  ...alert,
+  roles: Array.isArray(alert.roles) ? alert.roles[0] ?? { name: "Unknown role" } : alert.roles,
+}));
+
+setNotifications(safeAlerts);
     } catch (err) {
       console.error("Lead alerts load error:", err);
       setError(err instanceof Error ? err.message : "Could not load alerts.");
