@@ -2,17 +2,26 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 export default function LoginPage() {
   const supabase = useMemo(() => createClient(), []);
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [checkingSession, setCheckingSession] = useState(true);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    const urlError = searchParams.get("error");
+
+    if (urlError) {
+      setError(urlError);
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     let isMounted = true;
@@ -24,14 +33,9 @@ export default function LoginPage() {
 
         const {
           data: { user },
-          error: userError,
         } = await supabase.auth.getUser();
 
         if (!isMounted) return;
-
-        if (userError) {
-          throw new Error(userError.message);
-        }
 
         if (user) {
           router.replace("/");
@@ -39,9 +43,7 @@ export default function LoginPage() {
           return;
         }
       } catch (err) {
-        if (!isMounted) return;
         console.error("Login session check failed:", err);
-        setError("Could not verify sign-in state. Please try again.");
       } finally {
         if (isMounted) {
           setCheckingSession(false);
@@ -70,15 +72,15 @@ export default function LoginPage() {
       return;
     }
 
-    const { error } = await supabase.auth.signInWithOtp({
+    const { error: signInError } = await supabase.auth.signInWithOtp({
       email: trimmedEmail,
       options: {
         emailRedirectTo: `${window.location.origin}/auth/callback`,
       },
     });
 
-    if (error) {
-      setError(error.message);
+    if (signInError) {
+      setError(signInError.message);
       setLoading(false);
       return;
     }
@@ -93,7 +95,9 @@ export default function LoginPage() {
         <div className="mx-auto flex max-w-5xl justify-center px-6 py-16">
           <div className="w-full max-w-md rounded-2xl border border-stone-200 bg-white p-8 shadow-sm">
             <h1 className="text-3xl font-semibold text-stone-900">Sign In</h1>
-            <p className="mt-4 text-sm text-stone-600">Checking your session...</p>
+            <p className="mt-4 text-sm text-stone-600">
+              Checking your session...
+            </p>
           </div>
         </div>
       </main>
@@ -136,17 +140,17 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {message && (
+          {message ? (
             <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
               {message}
             </div>
-          )}
+          ) : null}
 
-          {error && (
+          {error ? (
             <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
               {error}
             </div>
-          )}
+          ) : null}
         </div>
       </div>
     </main>
