@@ -2,26 +2,17 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
   const supabase = useMemo(() => createClient(), []);
   const router = useRouter();
-  const searchParams = useSearchParams();
-
+  
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [checkingSession, setCheckingSession] = useState(true);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-
-  useEffect(() => {
-    const urlError = searchParams.get("error");
-
-    if (urlError) {
-      setError(urlError);
-    }
-  }, [searchParams]);
 
   useEffect(() => {
     let isMounted = true;
