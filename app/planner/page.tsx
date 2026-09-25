@@ -4,7 +4,15 @@ import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 
-type RoleCategory = "Lead" | "Platform" | "AV" | "Other";
+type RoleCategory =
+  | "Leadership"
+  | "Platform"
+  | "Production"
+  | "Hospitality"
+  | "Children"
+  | "Facilities"
+  | "Other";
+
 type NotificationType = "assignment" | "removal";
 
 type Role = {
@@ -88,7 +96,15 @@ function notifyTopNavToRefresh() {
   window.dispatchEvent(new Event("notifications-updated"));
 }
 
-const categoryOrder: RoleCategory[] = ["Lead", "Platform", "AV", "Other"];
+const categoryOrder: RoleCategory[] = [
+  "Leadership",
+  "Platform",
+  "Production",
+  "Hospitality",
+  "Children",
+  "Facilities",
+  "Other",
+];
 
 export default function PlannerPage() {
   const supabase = useMemo(() => createClient(), []);
@@ -131,20 +147,36 @@ export default function PlannerPage() {
     try {
       const { data: rolesData, error: rolesError } = await supabase
         .from("roles")
-        .select("id, name, active, category, sort_order")
+        .select(`
+          id,
+          name,
+          active,
+          sort_order,
+          role_categories (
+            name
+          )
+        `)
         .eq("active", true)
         .order("sort_order", { ascending: true })
         .order("name", { ascending: true });
 
-      if (rolesError) throw new Error(`Roles query failed: ${rolesError.message}`);
+      if (rolesError) {
+        throw new Error(`Roles query failed: ${rolesError.message}`);
+      }
 
-      const activeRoles: Role[] = (rolesData ?? []).map((role) => ({
-        id: role.id,
-        name: role.name,
-        active: role.active,
-        category: (role.category ?? "Other") as RoleCategory,
-        sort_order: role.sort_order ?? 999,
-      }));
+      const activeRoles: Role[] = (rolesData ?? []).map((role) => {
+        const categoryData = Array.isArray(role.role_categories)
+          ? role.role_categories[0]
+          : role.role_categories;
+
+        return {
+          id: role.id,
+          name: role.name,
+          active: role.active,
+          category: (categoryData?.name ?? "Other") as RoleCategory,
+          sort_order: role.sort_order ?? 999,
+        };
+      });
 
       setRoles(activeRoles);
 
@@ -240,8 +272,9 @@ export default function PlannerPage() {
 
   function findEntry(roleId: string, date: string) {
     return (
-      entries.find((entry) => entry.role_id === roleId && entry.date === date) ??
-      null
+      entries.find(
+        (entry) => entry.role_id === roleId && entry.date === date
+      ) ?? null
     );
   }
 
@@ -408,7 +441,10 @@ export default function PlannerPage() {
       .insert(rowsToInsert);
 
     if (notificationError) {
-      console.error("Assignment notification insert failed:", notificationError);
+      console.error(
+        "Assignment notification insert failed:",
+        notificationError
+      );
       setError(
         `Assignment saved, but notification failed: ${notificationError.message}`
       );
@@ -486,7 +522,9 @@ export default function PlannerPage() {
         .select("id, date, role_id, volunteer_id, status, published");
 
       if (insertError) {
-        throw new Error(`Could not create schedule rows: ${insertError.message}`);
+        throw new Error(
+          `Could not create schedule rows: ${insertError.message}`
+        );
       }
 
       const insertedRows = (insertedData ?? []) as ScheduleEntry[];
@@ -512,7 +550,10 @@ export default function PlannerPage() {
     }
   }
 
-  async function togglePublishedForDate(date: string, nextPublished: boolean) {
+  async function togglePublishedForDate(
+    date: string,
+    nextPublished: boolean
+  ) {
     const dateEntries = getDateEntries(date);
 
     if (dateEntries.length === 0) {
@@ -528,7 +569,9 @@ export default function PlannerPage() {
 
     setEntries((current) =>
       current.map((entry) =>
-        entry.date === date ? { ...entry, published: nextPublished } : entry
+        entry.date === date
+          ? { ...entry, published: nextPublished }
+          : entry
       )
     );
 
@@ -549,7 +592,9 @@ export default function PlannerPage() {
     }
 
     setSuccessMessage(
-      `${shortDate(date)} ${nextPublished ? "published" : "returned to draft"}.`
+      `${shortDate(date)} ${
+        nextPublished ? "published" : "returned to draft"
+      }.`
     );
 
     setPublishingDate(null);
