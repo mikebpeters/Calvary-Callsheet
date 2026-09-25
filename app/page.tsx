@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
-import { formatPublicName } from "@/lib/formatPublicName";
 
 type AppRole = "volunteer" | "ministry_leader" | "admin";
 
@@ -101,9 +100,24 @@ function getRoleIcon(roleName: string) {
   if (key.includes("sound") || key.includes("audio")) return "🎚️";
   if (key.includes("projection") || key.includes("slides")) return "📽️";
   if (key.includes("livestream") || key.includes("stream")) return "📡";
-  if (key.includes("host") || key.includes("greeter") || key.includes("welcome")) return "👋";
-  if (key.includes("kids") || key.includes("children") || key.includes("nursery")) return "👶";
-  if (key.includes("coffee") || key.includes("cafe") || key.includes("hospitality")) return "☕";
+  if (
+    key.includes("host") ||
+    key.includes("greeter") ||
+    key.includes("welcome")
+  )
+    return "👋";
+  if (
+    key.includes("kids") ||
+    key.includes("children") ||
+    key.includes("nursery")
+  )
+    return "👶";
+  if (
+    key.includes("coffee") ||
+    key.includes("cafe") ||
+    key.includes("hospitality")
+  )
+    return "☕";
   if (key.includes("prayer")) return "🙏";
   if (key.includes("security")) return "🛡️";
   if (key.includes("setup")) return "🪑";
@@ -119,7 +133,8 @@ function getDashboardItems(role: AppRole | null): DashboardItem[] {
     return [
       {
         title: "Planner",
-        description: "Create schedule rows, assign volunteers, and publish Sundays.",
+        description:
+          "Create schedule rows, assign volunteers, and publish Sundays.",
         href: "/planner",
         buttonText: "Open",
       },
@@ -215,7 +230,10 @@ export default function HomePage() {
   const nextSundayStr = useMemo(() => toYmd(nextSunday), [nextSunday]);
 
   const isSignedIn = !!userEmail;
-  const effectiveRole: AppRole | null = isSignedIn ? userRole ?? "volunteer" : null;
+  const effectiveRole: AppRole | null = isSignedIn
+    ? userRole ?? "volunteer"
+    : null;
+
   const canSeeDraftSchedules =
     effectiveRole === "admin" || effectiveRole === "ministry_leader";
 
@@ -260,7 +278,9 @@ export default function HomePage() {
           console.error("Home profile lookup failed:", profileRes.error);
           setUserRole("volunteer");
         } else {
-          setUserRole((profileRes.data?.role as AppRole | null) ?? "volunteer");
+          setUserRole(
+            (profileRes.data?.role as AppRole | null) ?? "volunteer"
+          );
         }
 
         setAuthLoaded(true);
@@ -268,9 +288,13 @@ export default function HomePage() {
         if (!isMounted) return;
 
         console.error("Home auth load error:", err);
+
         setAuthError(
-          err instanceof Error ? err.message : "Failed to load sign-in status."
+          err instanceof Error
+            ? err.message
+            : "Failed to load sign-in status."
         );
+
         setUserEmail(null);
         setUserRole(null);
         setAuthLoaded(true);
@@ -315,7 +339,9 @@ export default function HomePage() {
         if (!isMounted) return;
 
         if (rolesRes.error) {
-          throw new Error(`Roles query failed: ${rolesRes.error.message}`);
+          throw new Error(
+            `Roles query failed: ${rolesRes.error.message}`
+          );
         }
 
         setRoles((rolesRes.data as Role[]) ?? []);
@@ -331,14 +357,18 @@ export default function HomePage() {
         if (!isMounted) return;
 
         if (volunteersRes.error) {
-          throw new Error(`Volunteers query failed: ${volunteersRes.error.message}`);
+          throw new Error(
+            `Volunteers query failed: ${volunteersRes.error.message}`
+          );
         }
 
         setVolunteers((volunteersRes.data as Volunteer[]) ?? []);
 
         let entriesQuery = supabase
           .from("schedule_entries")
-          .select("id, date, role_id, volunteer_id, status, published")
+          .select(
+            "id, date, role_id, volunteer_id, status, published"
+          )
           .eq("date", nextSundayStr);
 
         if (!canSeeDraftSchedules) {
@@ -363,8 +393,11 @@ export default function HomePage() {
         if (!isMounted) return;
 
         console.error("Home page load error:", err);
+
         setHomeError(
-          err instanceof Error ? err.message : "Failed to load home page data."
+          err instanceof Error
+            ? err.message
+            : "Failed to load home page data."
         );
       } finally {
         if (isMounted) {
@@ -378,20 +411,35 @@ export default function HomePage() {
     return () => {
       isMounted = false;
     };
-  }, [authLoaded, canSeeDraftSchedules, nextSundayStr, supabase]);
+  }, [
+    authLoaded,
+    canSeeDraftSchedules,
+    nextSundayStr,
+    supabase,
+  ]);
 
+  /*
+   * Display the deliberately configured public name when one exists.
+   * Otherwise use the volunteer's actual name.
+   *
+   * We deliberately do not derive a person's display name from
+   * their email address.
+   */
   const volunteerMap = useMemo(() => {
     return new Map(
       volunteers.map((volunteer) => [
         volunteer.id,
-        volunteer.public_name?.trim() || formatPublicName(volunteer.name),
+        volunteer.public_name?.trim() || volunteer.name.trim(),
       ])
     );
   }, [volunteers]);
 
   const roleRows = useMemo(() => {
     return roles.map((role) => {
-      const entry = entries.find((item) => item.role_id === role.id);
+      const entry = entries.find(
+        (item) => item.role_id === role.id
+      );
+
       const displayAssignedName = entry?.volunteer_id
         ? volunteerMap.get(entry.volunteer_id) || null
         : null;
@@ -406,8 +454,14 @@ export default function HomePage() {
     });
   }, [roles, entries, volunteerMap]);
 
-  const assignedCount = roleRows.filter((row) => !row.isOpen).length;
-  const openCount = roleRows.filter((row) => row.isOpen).length;
+  const assignedCount = roleRows.filter(
+    (row) => !row.isOpen
+  ).length;
+
+  const openCount = roleRows.filter(
+    (row) => row.isOpen
+  ).length;
+
   const dashboardItems = getDashboardItems(effectiveRole);
 
   return (
@@ -424,8 +478,8 @@ export default function HomePage() {
             </h1>
 
             <p className="mt-4 max-w-2xl text-lg text-gray-700">
-              View the upcoming service schedule and access the tools available
-              for your role.
+              View the upcoming service schedule and access the tools
+              available for your role.
             </p>
 
             {authError ? (
@@ -467,10 +521,12 @@ export default function HomePage() {
             <h2 className="text-xl font-semibold text-gray-900">
               Sign in required
             </h2>
+
             <p className="mt-2 text-sm text-gray-700">
-              Sign in to view the schedule, availability tools, and role-specific
-              actions.
+              Sign in to view the schedule, availability tools, and
+              role-specific actions.
             </p>
+
             <Link
               href="/login"
               className="mt-5 inline-block rounded-lg bg-gray-900 px-5 py-3 text-sm font-medium text-white hover:bg-gray-800"
@@ -486,6 +542,7 @@ export default function HomePage() {
                   <h2 className="text-2xl font-semibold text-gray-900">
                     {prettyDate(nextSunday)} Schedule
                   </h2>
+
                   <p className="mt-2 text-sm text-gray-600">
                     This is the current schedule for the upcoming Sunday.
                   </p>
@@ -495,7 +552,10 @@ export default function HomePage() {
                   <div className="font-medium">
                     {assignedCount} of {roleRows.length} roles filled
                   </div>
-                  <div className="mt-1 text-gray-600">{openCount} open</div>
+
+                  <div className="mt-1 text-gray-600">
+                    {openCount} open
+                  </div>
                 </div>
               </div>
 
@@ -521,9 +581,13 @@ export default function HomePage() {
                       className="flex items-center justify-between gap-4 rounded-xl border border-stone-200 px-4 py-3"
                     >
                       <div className="flex min-w-0 items-center gap-3">
-                        <span className="text-xl" aria-hidden="true">
+                        <span
+                          className="text-xl"
+                          aria-hidden="true"
+                        >
                           {row.icon}
                         </span>
+
                         <span className="truncate font-medium text-gray-900">
                           {row.roleName}
                         </span>
@@ -531,10 +595,14 @@ export default function HomePage() {
 
                       <div
                         className={`shrink-0 text-sm font-medium ${
-                          row.isOpen ? "text-amber-700" : "text-emerald-700"
+                          row.isOpen
+                            ? "text-amber-700"
+                            : "text-emerald-700"
                         }`}
                       >
-                        {row.isOpen ? "Open" : row.assignedName}
+                        {row.isOpen
+                          ? "Open"
+                          : row.assignedName}
                       </div>
                     </div>
                   ))}
@@ -543,8 +611,8 @@ export default function HomePage() {
 
               {canSeeDraftSchedules ? (
                 <div className="mt-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                  Admin view: draft and published schedule rows may be visible
-                  here.
+                  Admin view: draft and published schedule rows may be
+                  visible here.
                 </div>
               ) : null}
             </section>
@@ -554,9 +622,10 @@ export default function HomePage() {
                 <h2 className="text-xl font-semibold text-gray-900">
                   Your next actions
                 </h2>
+
                 <p className="mt-1 text-sm text-gray-600">
-                  These are the most relevant tools for your current access
-                  level.
+                  These are the most relevant tools for your current
+                  access level.
                 </p>
               </div>
 
@@ -570,6 +639,7 @@ export default function HomePage() {
                       <h3 className="text-lg font-semibold text-gray-900">
                         {item.title}
                       </h3>
+
                       <p className="mt-2 text-sm leading-6 text-gray-700">
                         {item.description}
                       </p>
