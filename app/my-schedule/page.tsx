@@ -8,6 +8,7 @@ type Volunteer = {
   id: string;
   user_id: string | null;
   name: string;
+  email: string | null;
   active: boolean;
 };
 
@@ -34,6 +35,7 @@ function toYmd(date: Date) {
 
 function prettyDate(dateString: string) {
   const date = new Date(`${dateString}T12:00:00`);
+
   return date.toLocaleDateString("en-CA", {
     weekday: "long",
     month: "long",
@@ -76,9 +78,10 @@ export default function MySchedulePage() {
 
   const [loading, setLoading] = useState(true);
   const [isSignedIn, setIsSignedIn] = useState(false);
-  const [currentVolunteer, setCurrentVolunteer] = useState<Volunteer | null>(
-    null
-  );
+
+  const [currentVolunteer, setCurrentVolunteer] =
+    useState<Volunteer | null>(null);
+
   const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
   const [error, setError] = useState("");
   const [savingEntryId, setSavingEntryId] = useState<string | null>(null);
@@ -92,6 +95,12 @@ export default function MySchedulePage() {
       try {
         setLoading(true);
         setError("");
+
+        /*
+         * ---------------------------------------------------------
+         * 1. GET THE SIGNED-IN SUPABASE AUTH USER
+         * ---------------------------------------------------------
+         */
 
         const {
           data: { user },
@@ -115,20 +124,158 @@ export default function MySchedulePage() {
 
         setIsSignedIn(true);
 
-        const { data: volunteerData, error: volunteerError } = await supabase
+        /*
+         * ---------------------------------------------------------
+         * 2. FIRST TRY THE NORMAL PERMANENT USER_ID LINK
+         * ---------------------------------------------------------
+         */
+
+        const {
+          data: linkedVolunteer,
+          error: linkedVolunteerError,
+        } = await supabase
           .from("volunteers")
-          .select("id, user_id, name, active")
+          .select("id, user_id, name, email, active")
           .eq("user_id", user.id)
           .eq("active", true)
           .maybeSingle();
 
         if (!isMounted) return;
 
-        if (volunteerError) {
+        if (linkedVolunteerError) {
           throw new Error(
-            `Could not load volunteer profile: ${volunteerError.message}`
+            `Could not load volunteer profile: ${linkedVolunteerError.message}`
           );
         }
+
+        let volunteerData: Volunteer | null =
+          (linkedVolunteer as Volunteer | null) ?? null;
+
+        /*
+         * ---------------------------------------------------------
+         * 3. AUTO-LINK BY EMAIL IF THIS ACCOUNT IS NOT YET LINKED
+         * ---------------------------------------------------------
+         *
+         * This handles volunteers who were created by an admin
+         * before they ever signed into Call Sheet.
+         *
+         * Example:
+         *
+         * Mike Test
+         * mike@wayaheadsc.com
+         * user_id = NULL
+         *
+         * When mike@wayaheadsc.com signs in, we find that volunteer
+         * record by email and permanently store the Supabase Auth UID.
+         */
+
+        if (!volunteerData && user.email) {
+          const normalizedEmail = user.email.trim().toLowerCase();
+
+          const {
+            data: emailVolunteer,
+            error: emailVolunteerError,
+          } = await supabase
+            .from("volunteers")
+            .select("id, user_id, name, email, active")
+            .ilike("email", normalizedEmail)
+            .eq("active", true)
+            .maybeSingle();
+
+          if (!isMounted) return;
+
+          if (emailVolunteerError) {
+            throw new Error(
+              `Could not match volunteer by email: ${emailVolunteerError.message}`
+            );
+          }
+
+          if (emailVolunteer) {
+            /*
+             * Only claim an unlinked volunteer record.
+             *
+             * We never overwrite a volunteer that is already linked
+             * to another Supabase Auth account.
+             */
+
+            if (
+              emailVolunteer.user_id &&
+              emailVolunteer.user_id !== user.id
+            ) {
+              throw new Error(
+                "A volunteer record with this email is already linked to another account. Please contact an administrator."
+              );
+            }
+
+            if (!emailVolunteer.user_id) {
+              const {
+                data: linkedRecord,
+                error: linkError,
+              } = await supabase
+                .from("volunteers")
+                .update({
+                  user_id: user.id,
+                })
+                .eq("id", emailVolunteer.id)
+                .is("user_id", null)
+                .select("id, user_id, name, email, active")
+                .maybeSingle();
+
+              if (!isMounted) return;
+
+              if (linkError) {
+                throw new Error(
+                  `We found your volunteer profile, but could not link your account: ${linkError.message}`
+                );
+              }
+
+              /*
+               * If another request somehow linked the record between
+               * our lookup and update, retrieve the final record and
+               * verify ownership.
+               */
+
+              if (!linkedRecord) {
+                const {
+                  data: refreshedVolunteer,
+                  error: refreshVolunteerError,
+                } = await supabase
+                  .from("volunteers")
+                  .select("id, user_id, name, email, active")
+                  .eq("id", emailVolunteer.id)
+                  .maybeSingle();
+
+                if (refreshVolunteerError) {
+                  throw new Error(
+                    `Could not verify volunteer link: ${refreshVolunteerError.message}`
+                  );
+                }
+
+                if (
+                  refreshedVolunteer?.user_id &&
+                  refreshedVolunteer.user_id !== user.id
+                ) {
+                  throw new Error(
+                    "This volunteer profile was linked to another account. Please contact an administrator."
+                  );
+                }
+
+                volunteerData =
+                  (refreshedVolunteer as Volunteer | null) ?? null;
+              } else {
+                volunteerData = linkedRecord as Volunteer;
+              }
+            } else {
+              volunteerData = emailVolunteer as Volunteer;
+            }
+          }
+        }
+
+        /*
+         * ---------------------------------------------------------
+         * 4. NO MATCHING VOLUNTEER
+         * ---------------------------------------------------------
+         */
 
         if (!volunteerData) {
           setCurrentVolunteer(null);
@@ -138,13 +285,20 @@ export default function MySchedulePage() {
 
         setCurrentVolunteer(volunteerData);
 
-        const { data: entriesData, error: entriesError } = await supabase
-  .from("schedule_entries")
-  .select("id, date, role_id, volunteer_id, status")
-  .eq("volunteer_id", volunteerData.id)
-  .eq("published", true) // ← ADD THIS LINE
-  .gte("date", today)
-  .order("date", { ascending: true });
+        /*
+         * ---------------------------------------------------------
+         * 5. LOAD THIS VOLUNTEER'S PUBLISHED ASSIGNMENTS
+         * ---------------------------------------------------------
+         */
+
+        const { data: entriesData, error: entriesError } =
+          await supabase
+            .from("schedule_entries")
+            .select("id, date, role_id, volunteer_id, status")
+            .eq("volunteer_id", volunteerData.id)
+            .eq("published", true)
+            .gte("date", today)
+            .order("date", { ascending: true });
 
         if (!isMounted) return;
 
@@ -161,38 +315,58 @@ export default function MySchedulePage() {
           return;
         }
 
-        const roleIds = [...new Set(entries.map((entry) => entry.role_id))];
+        /*
+         * ---------------------------------------------------------
+         * 6. LOAD ROLE NAMES
+         * ---------------------------------------------------------
+         */
 
-        const { data: rolesData, error: rolesError } = await supabase
-          .from("roles")
-          .select("id, name, active")
-          .in("id", roleIds);
+        const roleIds = [
+          ...new Set(entries.map((entry) => entry.role_id)),
+        ];
+
+        const { data: rolesData, error: rolesError } =
+          await supabase
+            .from("roles")
+            .select("id, name, active")
+            .in("id", roleIds);
 
         if (!isMounted) return;
 
         if (rolesError) {
-          throw new Error(`Could not load roles: ${rolesError.message}`);
+          throw new Error(
+            `Could not load roles: ${rolesError.message}`
+          );
         }
 
         const roleMap = new Map(
-          (rolesData ?? []).map((role: Role) => [role.id, role.name])
+          (rolesData ?? []).map((role: Role) => [
+            role.id,
+            role.name,
+          ])
         );
 
         const rows: AssignmentRow[] = entries.map((entry) => ({
           entryId: entry.id,
           date: entry.date,
           roleId: entry.role_id,
-          roleName: roleMap.get(entry.role_id) ?? "Unknown role",
+          roleName:
+            roleMap.get(entry.role_id) ?? "Unknown role",
           status: entry.status,
         }));
 
         setAssignments(rows);
       } catch (err) {
         if (!isMounted) return;
+
         console.error("My Schedule load error:", err);
+
         setError(
-          err instanceof Error ? err.message : "Unknown schedule load error."
+          err instanceof Error
+            ? err.message
+            : "Unknown schedule load error."
         );
+
         setCurrentVolunteer(null);
         setAssignments([]);
       } finally {
@@ -233,17 +407,24 @@ export default function MySchedulePage() {
 
     if (updateError) {
       console.error("Unclaim error:", updateError);
+
       setAssignments(previousAssignments);
-      setError(`Could not unclaim assignment: ${updateError.message}`);
+
+      setError(
+        `Could not unclaim assignment: ${updateError.message}`
+      );
+
       setSavingEntryId(null);
       return;
     }
 
     if (!data || data.length === 0) {
       setAssignments(previousAssignments);
+
       setError(
         "This assignment changed before it could be removed. Please refresh and try again."
       );
+
       setSavingEntryId(null);
       return;
     }
@@ -258,6 +439,7 @@ export default function MySchedulePage() {
           <h1 className="text-2xl font-semibold tracking-tight text-gray-900">
             My Schedule
           </h1>
+
           <p className="mt-2 text-sm text-gray-600">
             Loading your schedule...
           </p>
@@ -273,6 +455,7 @@ export default function MySchedulePage() {
           <h1 className="text-2xl font-semibold tracking-tight text-gray-900">
             My Schedule
           </h1>
+
           <p className="mt-2 text-sm text-gray-600">
             You need to sign in to view your schedule.
           </p>
@@ -303,15 +486,18 @@ export default function MySchedulePage() {
           <h1 className="text-2xl font-semibold tracking-tight text-gray-900">
             My Schedule
           </h1>
+
           <p className="mt-1 text-sm text-gray-600">
-            View your upcoming assignments, add them to Google Calendar, and
-            step back from a commitment if needed.
+            View your upcoming assignments, add them to Google
+            Calendar, and step back from a commitment if needed.
           </p>
 
           {currentVolunteer && (
             <div className="mt-4 rounded-xl bg-stone-100 px-4 py-3 text-sm text-stone-700">
               Signed in as{" "}
-              <span className="font-medium">{currentVolunteer.name}</span>
+              <span className="font-medium">
+                {currentVolunteer.name}
+              </span>
             </div>
           )}
 
@@ -327,9 +513,10 @@ export default function MySchedulePage() {
             <h2 className="text-lg font-semibold text-gray-900">
               No volunteer profile found
             </h2>
+
             <p className="mt-2 text-sm text-gray-600">
-              Your account is signed in, but it is not linked to an active
-              volunteer profile yet.
+              We could not find an active volunteer profile matching
+              this account. Please contact an administrator.
             </p>
           </section>
         ) : assignments.length === 0 ? (
@@ -337,9 +524,11 @@ export default function MySchedulePage() {
             <h2 className="text-lg font-semibold text-gray-900">
               No upcoming assignments
             </h2>
+
             <p className="mt-2 text-sm text-gray-600">
               You do not have any upcoming scheduled roles right now.
             </p>
+
             <div className="mt-6">
               <Link
                 href="/"
@@ -353,11 +542,14 @@ export default function MySchedulePage() {
           <section className="rounded-2xl border bg-white p-6 shadow-sm">
             <div className="space-y-4">
               {assignments.map((assignment) => {
-                const isSaving = savingEntryId === assignment.entryId;
-                const calendarUrl = buildGoogleCalendarUrl({
-                  date: assignment.date,
-                  roleName: assignment.roleName,
-                });
+                const isSaving =
+                  savingEntryId === assignment.entryId;
+
+                const calendarUrl =
+                  buildGoogleCalendarUrl({
+                    date: assignment.date,
+                    roleName: assignment.roleName,
+                  });
 
                 return (
                   <div
@@ -369,9 +561,11 @@ export default function MySchedulePage() {
                         <p className="text-sm font-medium text-stone-500">
                           {prettyDate(assignment.date)}
                         </p>
+
                         <h2 className="mt-1 text-lg font-semibold text-gray-900">
                           {assignment.roleName}
                         </h2>
+
                         <p className="mt-2 text-sm font-medium text-emerald-700">
                           Assigned
                         </p>
@@ -390,12 +584,16 @@ export default function MySchedulePage() {
                         <button
                           type="button"
                           onClick={() =>
-                            unclaimAssignment(assignment.entryId)
+                            unclaimAssignment(
+                              assignment.entryId
+                            )
                           }
                           disabled={isSaving}
                           className="inline-flex rounded-xl border border-red-300 bg-white px-4 py-2 text-sm font-medium text-red-700 shadow-sm hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          {isSaving ? "Removing..." : "Unclaim"}
+                          {isSaving
+                            ? "Removing..."
+                            : "Unclaim"}
                         </button>
                       </div>
                     </div>
