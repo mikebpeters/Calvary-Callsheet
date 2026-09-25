@@ -4,23 +4,21 @@ import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 
-type RoleCategory =
-  | "Leadership"
-  | "Platform"
-  | "Production"
-  | "Hospitality"
-  | "Children"
-  | "Facilities"
-  | "Other";
-
 type NotificationType = "assignment" | "removal";
 
 type Role = {
   id: string;
   name: string;
   active: boolean;
-  category: RoleCategory;
+  category_id: string | null;
   sort_order: number;
+};
+
+type RoleCategory = {
+  id: string;
+  name: string;
+  sort_order: number;
+  active: boolean;
 };
 
 type Volunteer = {
@@ -74,6 +72,7 @@ function toYmd(date: Date) {
   const year = date.getFullYear();
   const month = `${date.getMonth() + 1}`.padStart(2, "0");
   const day = `${date.getDate()}`.padStart(2, "0");
+
   return `${year}-${month}-${day}`;
 }
 
@@ -81,11 +80,13 @@ function getNextSunday() {
   const today = new Date();
   const day = today.getDay();
   const daysUntilSunday = day === 0 ? 0 : 7 - day;
+
   return addDays(today, daysUntilSunday);
 }
 
 function shortDate(dateString: string) {
   const date = new Date(`${dateString}T12:00:00`);
+
   return date.toLocaleDateString("en-CA", {
     month: "short",
     day: "numeric",
@@ -96,16 +97,6 @@ function notifyTopNavToRefresh() {
   window.dispatchEvent(new Event("notifications-updated"));
 }
 
-const categoryOrder: RoleCategory[] = [
-  "Leadership",
-  "Platform",
-  "Production",
-  "Hospitality",
-  "Children",
-  "Facilities",
-  "Other",
-];
-
 export default function PlannerPage() {
   const supabase = useMemo(() => createClient(), []);
 
@@ -114,6 +105,7 @@ export default function PlannerPage() {
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
 
   const [roles, setRoles] = useState<Role[]>([]);
+  const [roleCategories, setRoleCategories] = useState<RoleCategory[]>([]);
   const [volunteers, setVolunteers] = useState<Volunteer[]>([]);
   const [entries, setEntries] = useState<ScheduleEntry[]>([]);
   const [blackouts, setBlackouts] = useState<VolunteerBlackout[]>([]);
@@ -124,11 +116,13 @@ export default function PlannerPage() {
   const [savingCell, setSavingCell] = useState<string | null>(null);
   const [publishingDate, setPublishingDate] = useState<string | null>(null);
   const [creatingFromTemplate, setCreatingFromTemplate] = useState(false);
+
   const [error, setError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
 
   const plannerDates = useMemo(() => {
     const first = new Date(`${startDate}T12:00:00`);
+
     return [0, 7, 14, 21, 28, 35, 42, 49, 56, 63, 70, 77].map((days) =>
       toYmd(addDays(first, days))
     );
@@ -136,6 +130,7 @@ export default function PlannerPage() {
 
   useEffect(() => {
     loadPlannerData();
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startDate]);
 
@@ -145,17 +140,24 @@ export default function PlannerPage() {
     setSuccessMessage("");
 
     try {
+      const { data: categoriesData, error: categoriesError } = await supabase
+        .from("role_categories")
+        .select("id, name, sort_order, active")
+        .eq("active", true)
+        .order("sort_order", { ascending: true })
+        .order("name", { ascending: true });
+
+      if (categoriesError) {
+        throw new Error(
+          `Role categories query failed: ${categoriesError.message}`
+        );
+      }
+
+      setRoleCategories((categoriesData ?? []) as RoleCategory[]);
+
       const { data: rolesData, error: rolesError } = await supabase
         .from("roles")
-        .select(`
-          id,
-          name,
-          active,
-          sort_order,
-          role_categories (
-            name
-          )
-        `)
+        .select("id, name, active, category_id, sort_order")
         .eq("active", true)
         .order("sort_order", { ascending: true })
         .order("name", { ascending: true });
@@ -164,19 +166,13 @@ export default function PlannerPage() {
         throw new Error(`Roles query failed: ${rolesError.message}`);
       }
 
-      const activeRoles: Role[] = (rolesData ?? []).map((role) => {
-        const categoryData = Array.isArray(role.role_categories)
-          ? role.role_categories[0]
-          : role.role_categories;
-
-        return {
-          id: role.id,
-          name: role.name,
-          active: role.active,
-          category: (categoryData?.name ?? "Other") as RoleCategory,
-          sort_order: role.sort_order ?? 999,
-        };
-      });
+      const activeRoles: Role[] = (rolesData ?? []).map((role) => ({
+        id: role.id,
+        name: role.name,
+        active: role.active,
+        category_id: role.category_id ?? null,
+        sort_order: role.sort_order ?? 999,
+      }));
 
       setRoles(activeRoles);
 
@@ -189,7 +185,9 @@ export default function PlannerPage() {
         .order("name", { ascending: true });
 
       if (volunteersError) {
-        throw new Error(`Volunteers query failed: ${volunteersError.message}`);
+        throw new Error(
+          `Volunteers query failed: ${volunteersError.message}`
+        );
       }
 
       setVolunteers((volunteersData ?? []) as Volunteer[]);
@@ -205,6 +203,7 @@ export default function PlannerPage() {
       }
 
       const loadedTemplates = (templatesData ?? []) as ServiceTemplate[];
+
       setTemplates(loadedTemplates);
 
       if (!selectedTemplateId && loadedTemplates.length > 0) {
@@ -223,7 +222,9 @@ export default function PlannerPage() {
         );
       }
 
-      setTemplateRoles((templateRolesData ?? []) as ServiceTemplateRole[]);
+      setTemplateRoles(
+        (templateRolesData ?? []) as ServiceTemplateRole[]
+      );
 
       const { data: entriesData, error: entriesError } = await supabase
         .from("schedule_entries")
@@ -258,8 +259,13 @@ export default function PlannerPage() {
       setBlackouts(safeBlackouts);
     } catch (err) {
       console.error("Planner load error:", err);
-      setError(err instanceof Error ? err.message : "Planner load failed.");
+
+      setError(
+        err instanceof Error ? err.message : "Planner load failed."
+      );
+
       setRoles([]);
+      setRoleCategories([]);
       setVolunteers([]);
       setEntries([]);
       setBlackouts([]);
@@ -284,22 +290,32 @@ export default function PlannerPage() {
     return (
       blackouts.find(
         (blackout) =>
-          blackout.volunteer_id === volunteerId && blackout.date === date
+          blackout.volunteer_id === volunteerId &&
+          blackout.date === date
       ) ?? null
     );
   }
 
   function getVolunteerName(volunteerId: string) {
-    return volunteers.find((volunteer) => volunteer.id === volunteerId)?.name;
+    return volunteers.find(
+      (volunteer) => volunteer.id === volunteerId
+    )?.name;
   }
 
   function getVolunteerById(volunteerId: string | null) {
     if (!volunteerId) return null;
-    return volunteers.find((volunteer) => volunteer.id === volunteerId) ?? null;
+
+    return (
+      volunteers.find(
+        (volunteer) => volunteer.id === volunteerId
+      ) ?? null
+    );
   }
 
   function getRoleName(roleId: string) {
-    return roles.find((role) => role.id === roleId)?.name ?? "a role";
+    return (
+      roles.find((role) => role.id === roleId)?.name ?? "a role"
+    );
   }
 
   function getDateEntries(date: string) {
@@ -318,8 +334,13 @@ export default function PlannerPage() {
       };
     }
 
-    const published = dateEntries.filter((entry) => entry.published).length;
-    const assigned = dateEntries.filter((entry) => entry.volunteer_id).length;
+    const published = dateEntries.filter(
+      (entry) => entry.published
+    ).length;
+
+    const assigned = dateEntries.filter(
+      (entry) => entry.volunteer_id
+    ).length;
 
     return {
       total: dateEntries.length,
@@ -344,7 +365,11 @@ export default function PlannerPage() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ to, subject, text }),
+        body: JSON.stringify({
+          to,
+          subject,
+          text,
+        }),
       });
 
       if (!response.ok) {
@@ -353,6 +378,68 @@ export default function PlannerPage() {
       }
     } catch (err) {
       console.error("Email send failed:", err);
+    }
+  }
+
+  async function insertNotification({
+    volunteer,
+    roleId,
+    date,
+    type,
+  }: {
+    volunteer: Volunteer;
+    roleId: string;
+    date: string;
+    type: NotificationType;
+  }) {
+    if (!volunteer.user_id) return;
+
+    const roleName = getRoleName(roleId);
+    const serviceDate = shortDate(date);
+
+    const title =
+      type === "assignment"
+        ? "You have been scheduled"
+        : "You have been removed from a schedule";
+
+    const body =
+      type === "assignment"
+        ? `You are scheduled for ${roleName} on ${serviceDate}.`
+        : `You are no longer scheduled for ${roleName} on ${serviceDate}.`;
+
+    const { error: notificationError } = await supabase
+      .from("notifications")
+      .insert({
+        user_id: volunteer.user_id,
+        title,
+        body,
+        href: "/my-schedule",
+        read_at: null,
+        type,
+      });
+
+    if (notificationError) {
+      console.error(
+        "Notification insert failed:",
+        notificationError
+      );
+
+      throw new Error(
+        `Notification failed: ${notificationError.message}`
+      );
+    }
+
+    const shouldEmail =
+      type === "assignment"
+        ? volunteer.email_on_assignment
+        : volunteer.email_on_removal;
+
+    if (volunteer.email && shouldEmail) {
+      await sendEmail({
+        to: volunteer.email,
+        subject: title,
+        text: body,
+      });
     }
   }
 
@@ -367,91 +454,66 @@ export default function PlannerPage() {
     oldVolunteerId: string | null;
     newVolunteerId: string | null;
   }) {
-    const isNewAssignment = !oldVolunteerId && newVolunteerId;
-    const isRemoval = oldVolunteerId && !newVolunteerId;
+    const isNewAssignment =
+      !oldVolunteerId && Boolean(newVolunteerId);
+
+    const isRemoval =
+      Boolean(oldVolunteerId) && !newVolunteerId;
+
     const isChange =
-      oldVolunteerId && newVolunteerId && oldVolunteerId !== newVolunteerId;
+      Boolean(oldVolunteerId) &&
+      Boolean(newVolunteerId) &&
+      oldVolunteerId !== newVolunteerId;
 
-    if (!isNewAssignment && !isRemoval && !isChange) return;
-
-    const roleName = getRoleName(roleId);
-    const serviceDate = shortDate(date);
-    const href = "/my-schedule";
-
-    const rowsToInsert: {
-      user_id: string;
-      title: string;
-      body: string;
-      href: string;
-      read_at: null;
-      type: NotificationType;
-    }[] = [];
-
-    const newVolunteer = getVolunteerById(newVolunteerId);
-    const oldVolunteer = getVolunteerById(oldVolunteerId);
-
-    if (newVolunteer?.user_id) {
-      const title = "You have been scheduled";
-      const body = `You are scheduled for ${roleName} on ${serviceDate}.`;
-
-      rowsToInsert.push({
-        user_id: newVolunteer.user_id,
-        title,
-        body,
-        href,
-        read_at: null,
-        type: "assignment",
-      });
-
-      if (newVolunteer.email && newVolunteer.email_on_assignment) {
-        await sendEmail({
-          to: newVolunteer.email,
-          subject: title,
-          text: body,
-        });
-      }
-    }
-
-    if (oldVolunteer?.user_id) {
-      const title = "You have been removed from a schedule";
-      const body = `You are no longer scheduled for ${roleName} on ${serviceDate}.`;
-
-      rowsToInsert.push({
-        user_id: oldVolunteer.user_id,
-        title,
-        body,
-        href,
-        read_at: null,
-        type: "removal",
-      });
-
-      if (oldVolunteer.email && oldVolunteer.email_on_removal) {
-        await sendEmail({
-          to: oldVolunteer.email,
-          subject: title,
-          text: body,
-        });
-      }
-    }
-
-    if (rowsToInsert.length === 0) return;
-
-    const { error: notificationError } = await supabase
-      .from("notifications")
-      .insert(rowsToInsert);
-
-    if (notificationError) {
-      console.error(
-        "Assignment notification insert failed:",
-        notificationError
-      );
-      setError(
-        `Assignment saved, but notification failed: ${notificationError.message}`
-      );
+    if (!isNewAssignment && !isRemoval && !isChange) {
       return;
     }
 
+    const oldVolunteer = getVolunteerById(oldVolunteerId);
+    const newVolunteer = getVolunteerById(newVolunteerId);
+
+    if ((isRemoval || isChange) && oldVolunteer) {
+      await insertNotification({
+        volunteer: oldVolunteer,
+        roleId,
+        date,
+        type: "removal",
+      });
+    }
+
+    if ((isNewAssignment || isChange) && newVolunteer) {
+      await insertNotification({
+        volunteer: newVolunteer,
+        roleId,
+        date,
+        type: "assignment",
+      });
+    }
+
     notifyTopNavToRefresh();
+  }
+
+  async function sendPublishNotifications(date: string) {
+    const dateEntries = getDateEntries(date).filter(
+      (entry) => entry.volunteer_id
+    );
+
+    for (const entry of dateEntries) {
+      const volunteer = getVolunteerById(entry.volunteer_id);
+
+      if (!volunteer) continue;
+
+      await insertNotification({
+        volunteer,
+        roleId: entry.role_id,
+        date,
+        type: "assignment",
+      });
+    }
+
+    if (dateEntries.length > 0) {
+      notifyTopNavToRefresh();
+    }
   }
 
   async function createScheduleFromTemplate() {
@@ -471,7 +533,9 @@ export default function PlannerPage() {
 
     try {
       const roleIdsForTemplate = templateRoles
-        .filter((item) => item.template_id === selectedTemplateId)
+        .filter(
+          (item) => item.template_id === selectedTemplateId
+        )
         .sort((a, b) => a.sort_order - b.sort_order)
         .map((item) => item.role_id);
 
@@ -481,11 +545,14 @@ export default function PlannerPage() {
         );
       }
 
-      const { data: existingData, error: existingError } = await supabase
-        .from("schedule_entries")
-        .select("id, date, role_id, volunteer_id, status, published")
-        .eq("date", templateDate)
-        .in("role_id", roleIdsForTemplate);
+      const { data: existingData, error: existingError } =
+        await supabase
+          .from("schedule_entries")
+          .select(
+            "id, date, role_id, volunteer_id, status, published"
+          )
+          .eq("date", templateDate)
+          .in("role_id", roleIdsForTemplate);
 
       if (existingError) {
         throw new Error(
@@ -494,11 +561,15 @@ export default function PlannerPage() {
       }
 
       const existingRoleIds = new Set(
-        (existingData ?? []).map((entry) => entry.role_id)
+        (existingData ?? []).map(
+          (entry) => entry.role_id
+        )
       );
 
       const rowsToInsert = roleIdsForTemplate
-        .filter((roleId) => !existingRoleIds.has(roleId))
+        .filter(
+          (roleId) => !existingRoleIds.has(roleId)
+        )
         .map((roleId) => ({
           date: templateDate,
           role_id: roleId,
@@ -513,13 +584,17 @@ export default function PlannerPage() {
             templateDate
           )} already has all roles from this template.`
         );
+
         return;
       }
 
-      const { data: insertedData, error: insertError } = await supabase
-        .from("schedule_entries")
-        .insert(rowsToInsert)
-        .select("id, date, role_id, volunteer_id, status, published");
+      const { data: insertedData, error: insertError } =
+        await supabase
+          .from("schedule_entries")
+          .insert(rowsToInsert)
+          .select(
+            "id, date, role_id, volunteer_id, status, published"
+          );
 
       if (insertError) {
         throw new Error(
@@ -527,10 +602,14 @@ export default function PlannerPage() {
         );
       }
 
-      const insertedRows = (insertedData ?? []) as ScheduleEntry[];
+      const insertedRows =
+        (insertedData ?? []) as ScheduleEntry[];
 
       if (plannerDates.includes(templateDate)) {
-        setEntries((current) => [...current, ...insertedRows]);
+        setEntries((current) => [
+          ...current,
+          ...insertedRows,
+        ]);
       }
 
       setSuccessMessage(
@@ -539,7 +618,11 @@ export default function PlannerPage() {
         } for ${shortDate(templateDate)}.`
       );
     } catch (err) {
-      console.error("Create schedule from template error:", err);
+      console.error(
+        "Create schedule from template error:",
+        err
+      );
+
       setError(
         err instanceof Error
           ? err.message
@@ -557,7 +640,9 @@ export default function PlannerPage() {
     const dateEntries = getDateEntries(date);
 
     if (dateEntries.length === 0) {
-      setError("There are no schedule rows for this date yet.");
+      setError(
+        "There are no schedule rows for this date yet."
+      );
       return;
     }
 
@@ -567,37 +652,92 @@ export default function PlannerPage() {
 
     const previousEntries = [...entries];
 
-    setEntries((current) =>
-      current.map((entry) =>
-        entry.date === date
-          ? { ...entry, published: nextPublished }
-          : entry
-      )
-    );
+    try {
+      /*
+       * First update the database.
+       *
+       * IMPORTANT:
+       * Publishing is the point at which draft assignments
+       * become visible/official and assignment notifications
+       * are sent.
+       *
+       * Unpublishing does NOT send removal notifications.
+       */
 
-    const { error: updateError } = await supabase
-      .from("schedule_entries")
-      .update({ published: nextPublished })
-      .eq("date", date);
+      const { error: updateError } = await supabase
+        .from("schedule_entries")
+        .update({
+          published: nextPublished,
+        })
+        .eq("date", date);
 
-    if (updateError) {
-      setEntries(previousEntries);
-      setError(
-        `Could not ${nextPublished ? "publish" : "unpublish"} ${shortDate(
-          date
-        )}: ${updateError.message}`
+      if (updateError) {
+        throw new Error(
+          `Could not ${
+            nextPublished ? "publish" : "unpublish"
+          } ${shortDate(date)}: ${updateError.message}`
+        );
+      }
+
+      setEntries((current) =>
+        current.map((entry) =>
+          entry.date === date
+            ? {
+                ...entry,
+                published: nextPublished,
+              }
+            : entry
+        )
       );
+
+      /*
+       * Only publishing generates assignment notifications.
+       *
+       * Draft assignment changes have intentionally remained
+       * silent up to this point.
+       */
+
+      if (nextPublished) {
+        try {
+          await sendPublishNotifications(date);
+        } catch (notificationErr) {
+          console.error(
+            "Publish notification error:",
+            notificationErr
+          );
+
+          setError(
+            notificationErr instanceof Error
+              ? `Schedule published, but one or more notifications failed: ${notificationErr.message}`
+              : "Schedule published, but one or more notifications failed."
+          );
+        }
+      }
+
+      setSuccessMessage(
+        nextPublished
+          ? `${shortDate(
+              date
+            )} published. Assigned volunteers have been notified.`
+          : `${shortDate(
+              date
+            )} returned to draft. No cancellation notifications were sent.`
+      );
+    } catch (err) {
+      console.error("Publish error:", err);
+
+      setEntries(previousEntries);
+
+      setError(
+        err instanceof Error
+          ? err.message
+          : `Could not ${
+              nextPublished ? "publish" : "unpublish"
+            } this schedule.`
+      );
+    } finally {
       setPublishingDate(null);
-      return;
     }
-
-    setSuccessMessage(
-      `${shortDate(date)} ${
-        nextPublished ? "published" : "returned to draft"
-      }.`
-    );
-
-    setPublishingDate(null);
   }
 
   async function updatePlannerAssignment(
@@ -606,13 +746,24 @@ export default function PlannerPage() {
     date: string,
     volunteerId: string
   ) {
-    const normalizedVolunteerId = volunteerId === "" ? null : volunteerId;
+    const normalizedVolunteerId =
+      volunteerId === "" ? null : volunteerId;
+
     const previousVolunteerId = entry.volunteer_id;
-    const blackout = findBlackout(normalizedVolunteerId, date);
+
+    if (previousVolunteerId === normalizedVolunteerId) {
+      return;
+    }
+
+    const blackout = findBlackout(
+      normalizedVolunteerId,
+      date
+    );
 
     if (blackout && normalizedVolunteerId) {
       const volunteerName =
-        getVolunteerName(normalizedVolunteerId) ?? "This volunteer";
+        getVolunteerName(normalizedVolunteerId) ??
+        "This volunteer";
 
       if (blackout.is_hard) {
         setError(
@@ -620,10 +771,13 @@ export default function PlannerPage() {
             date
           )} and cannot be scheduled.`
         );
+
         return;
       }
 
-      const note = blackout.note ? `\n\nNote: ${blackout.note}` : "";
+      const note = blackout.note
+        ? `\n\nNote: ${blackout.note}`
+        : "";
 
       const shouldContinue = window.confirm(
         `${volunteerName} is marked unavailable for ${shortDate(
@@ -631,11 +785,24 @@ export default function PlannerPage() {
         )}.${note}\n\nAssign anyway?`
       );
 
-      if (!shouldContinue) return;
+      if (!shouldContinue) {
+        return;
+      }
     }
 
     const cellKey = `${roleId}-${date}`;
     const previousEntries = [...entries];
+
+    /*
+     * Capture whether this Sunday was published BEFORE
+     * changing the assignment.
+     *
+     * Draft = save silently.
+     * Published = save and notify affected volunteers.
+     */
+
+    const dateWasPublished =
+      getDatePublishState(date).isPublished;
 
     setSavingCell(cellKey);
     setError("");
@@ -647,35 +814,75 @@ export default function PlannerPage() {
           ? {
               ...item,
               volunteer_id: normalizedVolunteerId,
-              status: normalizedVolunteerId ? "assigned" : null,
+              status: normalizedVolunteerId
+                ? "assigned"
+                : null,
             }
           : item
       )
     );
 
-    const { error: updateError } = await supabase
-      .from("schedule_entries")
-      .update({
-        volunteer_id: normalizedVolunteerId,
-        status: normalizedVolunteerId ? "assigned" : null,
-      })
-      .eq("id", entry.id);
+    try {
+      const { error: updateError } = await supabase
+        .from("schedule_entries")
+        .update({
+          volunteer_id: normalizedVolunteerId,
+          status: normalizedVolunteerId
+            ? "assigned"
+            : null,
+        })
+        .eq("id", entry.id);
 
-    if (updateError) {
+      if (updateError) {
+        throw new Error(
+          `Could not save assignment: ${updateError.message}`
+        );
+      }
+
+      /*
+       * CRITICAL WORKFLOW RULE:
+       *
+       * Draft Sunday:
+       * Save assignment only. No notification/email.
+       *
+       * Published Sunday:
+       * Notify affected volunteers immediately.
+       */
+
+      if (dateWasPublished) {
+        try {
+          await createAssignmentNotifications({
+            roleId,
+            date,
+            oldVolunteerId: previousVolunteerId,
+            newVolunteerId: normalizedVolunteerId,
+          });
+        } catch (notificationErr) {
+          console.error(
+            "Assignment notification error:",
+            notificationErr
+          );
+
+          setError(
+            notificationErr instanceof Error
+              ? `Assignment saved, but notification failed: ${notificationErr.message}`
+              : "Assignment saved, but notification failed."
+          );
+        }
+      }
+    } catch (err) {
+      console.error("Assignment save error:", err);
+
       setEntries(previousEntries);
-      setError(`Could not save assignment: ${updateError.message}`);
+
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not save assignment."
+      );
+    } finally {
       setSavingCell(null);
-      return;
     }
-
-    await createAssignmentNotifications({
-      roleId,
-      date,
-      oldVolunteerId: previousVolunteerId,
-      newVolunteerId: normalizedVolunteerId,
-    });
-
-    setSavingCell(null);
   }
 
   const visibleRoleIds = useMemo(() => {
@@ -691,23 +898,64 @@ export default function PlannerPage() {
   }, [entries, plannerDates]);
 
   const visibleRoles = useMemo(() => {
-    return roles.filter((role) => visibleRoleIds.has(role.id));
+    return roles.filter((role) =>
+      visibleRoleIds.has(role.id)
+    );
   }, [roles, visibleRoleIds]);
 
   const groupedRoles = useMemo(() => {
-    return categoryOrder.map((category) => ({
-      category,
-      roles: visibleRoles.filter((role) => role.category === category),
-    }));
-  }, [visibleRoles]);
+    const groups = roleCategories
+      .map((category) => ({
+        id: category.id,
+        name: category.name,
+        sort_order: category.sort_order,
+        roles: visibleRoles
+          .filter(
+            (role) =>
+              role.category_id === category.id
+          )
+          .sort(
+            (a, b) =>
+              a.sort_order - b.sort_order ||
+              a.name.localeCompare(b.name)
+          ),
+      }))
+      .filter((group) => group.roles.length > 0);
+
+    const uncategorizedRoles = visibleRoles
+      .filter((role) => !role.category_id)
+      .sort(
+        (a, b) =>
+          a.sort_order - b.sort_order ||
+          a.name.localeCompare(b.name)
+      );
+
+    if (uncategorizedRoles.length > 0) {
+      groups.push({
+        id: "uncategorized",
+        name: "Other",
+        sort_order: 999,
+        roles: uncategorizedRoles,
+      });
+    }
+
+    return groups.sort(
+      (a, b) =>
+        a.sort_order - b.sort_order ||
+        a.name.localeCompare(b.name)
+    );
+  }, [roleCategories, visibleRoles]);
 
   const selectedTemplate = templates.find(
-    (template) => template.id === selectedTemplateId
+    (template) =>
+      template.id === selectedTemplateId
   );
 
-  const selectedTemplateRoleCount = templateRoles.filter(
-    (item) => item.template_id === selectedTemplateId
-  ).length;
+  const selectedTemplateRoleCount =
+    templateRoles.filter(
+      (item) =>
+        item.template_id === selectedTemplateId
+    ).length;
 
   return (
     <main className="mx-auto max-w-7xl px-6 py-10">
@@ -718,9 +966,11 @@ export default function PlannerPage() {
               <h1 className="text-2xl font-semibold tracking-tight text-gray-900">
                 Planner
               </h1>
+
               <p className="mt-1 text-sm text-gray-600">
-                Create draft schedules from templates, assign volunteers, then
-                publish a Sunday when it is ready.
+                Create draft schedules from templates,
+                assign volunteers, then publish a Sunday
+                when it is ready.
               </p>
             </div>
 
@@ -728,10 +978,13 @@ export default function PlannerPage() {
               <label className="text-sm font-medium text-gray-700">
                 Starting Sunday
               </label>
+
               <input
                 type="date"
                 value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
+                onChange={(e) =>
+                  setStartDate(e.target.value)
+                }
                 className="rounded-xl border border-gray-300 px-3 py-2 text-sm shadow-sm"
               />
             </div>
@@ -758,8 +1011,9 @@ export default function PlannerPage() {
               </h2>
 
               <p className="mt-1 max-w-3xl text-sm text-gray-600">
-                Use a service template to create the structure for a Sunday
-                before assigning volunteers. New rows are created as drafts.
+                Use a service template to create the
+                structure for a Sunday before assigning
+                volunteers. New rows are created as drafts.
               </p>
 
               <div className="mt-3">
@@ -774,10 +1028,13 @@ export default function PlannerPage() {
 
             {templates.length === 0 ? (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                <p className="font-medium">No service templates yet.</p>
+                <p className="font-medium">
+                  No service templates yet.
+                </p>
+
                 <p className="mt-1">
-                  Create a template first, then return here to start a schedule
-                  from it.
+                  Create a template first, then return here
+                  to start a schedule from it.
                 </p>
               </div>
             ) : (
@@ -786,10 +1043,13 @@ export default function PlannerPage() {
                   <label className="text-sm font-medium text-gray-700">
                     Service Date
                   </label>
+
                   <input
                     type="date"
                     value={templateDate}
-                    onChange={(e) => setTemplateDate(e.target.value)}
+                    onChange={(e) =>
+                      setTemplateDate(e.target.value)
+                    }
                     className="rounded-xl border border-gray-300 px-3 py-2 text-sm shadow-sm"
                   />
                 </div>
@@ -798,14 +1058,25 @@ export default function PlannerPage() {
                   <label className="text-sm font-medium text-gray-700">
                     Template
                   </label>
+
                   <select
                     value={selectedTemplateId}
-                    onChange={(e) => setSelectedTemplateId(e.target.value)}
+                    onChange={(e) =>
+                      setSelectedTemplateId(
+                        e.target.value
+                      )
+                    }
                     className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm"
                   >
-                    <option value="">Select template</option>
+                    <option value="">
+                      Select template
+                    </option>
+
                     {templates.map((template) => (
-                      <option key={template.id} value={template.id}>
+                      <option
+                        key={template.id}
+                        value={template.id}
+                      >
                         {template.name}
                       </option>
                     ))}
@@ -815,7 +1086,9 @@ export default function PlannerPage() {
                 <div className="flex flex-col justify-end">
                   <button
                     type="button"
-                    onClick={createScheduleFromTemplate}
+                    onClick={
+                      createScheduleFromTemplate
+                    }
                     disabled={
                       creatingFromTemplate ||
                       !selectedTemplateId ||
@@ -823,7 +1096,9 @@ export default function PlannerPage() {
                     }
                     className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {creatingFromTemplate ? "Creating..." : "Create Schedule"}
+                    {creatingFromTemplate
+                      ? "Creating..."
+                      : "Create Schedule"}
                   </button>
                 </div>
               </div>
@@ -837,7 +1112,10 @@ export default function PlannerPage() {
                 {selectedTemplate.name}
               </span>{" "}
               ({selectedTemplateRoleCount} role
-              {selectedTemplateRoleCount === 1 ? "" : "s"})
+              {selectedTemplateRoleCount === 1
+                ? ""
+                : "s"}
+              )
             </p>
           ) : null}
         </section>
@@ -847,17 +1125,25 @@ export default function PlannerPage() {
             <h2 className="text-lg font-semibold text-gray-900">
               Publish Sundays
             </h2>
+
             <p className="mt-1 text-sm text-gray-600">
-              Published Sundays are visible to volunteers. Assignment changes
-              create notifications automatically.
+              Draft schedules can be edited without
+              notifying volunteers. Publishing makes the
+              schedule visible and sends assignment
+              notifications.
             </p>
 
             <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               {plannerDates.map((date) => {
-                const state = getDatePublishState(date);
-                const isSaving = publishingDate === date;
+                const state =
+                  getDatePublishState(date);
 
-                if (state.total === 0) return null;
+                const isSaving =
+                  publishingDate === date;
+
+                if (state.total === 0) {
+                  return null;
+                }
 
                 return (
                   <div
@@ -869,8 +1155,10 @@ export default function PlannerPage() {
                         <p className="font-medium text-gray-900">
                           {shortDate(date)}
                         </p>
+
                         <p className="mt-1 text-xs text-gray-600">
-                          {state.assigned} of {state.total} assigned
+                          {state.assigned} of{" "}
+                          {state.total} assigned
                         </p>
                       </div>
 
@@ -881,14 +1169,19 @@ export default function PlannerPage() {
                             : "bg-amber-50 text-amber-700"
                         }`}
                       >
-                        {state.isPublished ? "Published" : "Draft"}
+                        {state.isPublished
+                          ? "Published"
+                          : "Draft"}
                       </span>
                     </div>
 
                     <button
                       type="button"
                       onClick={() =>
-                        togglePublishedForDate(date, !state.isPublished)
+                        togglePublishedForDate(
+                          date,
+                          !state.isPublished
+                        )
                       }
                       disabled={isSaving}
                       className="mt-4 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-900 shadow-sm hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-60"
@@ -908,7 +1201,9 @@ export default function PlannerPage() {
 
         {loading ? (
           <section className="rounded-2xl border bg-white p-6 shadow-sm">
-            <p className="text-sm text-gray-600">Loading planner...</p>
+            <p className="text-sm text-gray-600">
+              Loading planner...
+            </p>
           </section>
         ) : (
           <section className="rounded-2xl border bg-white p-6 shadow-sm">
@@ -923,8 +1218,8 @@ export default function PlannerPage() {
                 </h2>
 
                 <p className="mt-2 text-sm text-gray-600">
-                  Use Start with a Template above to add roles for a service
-                  date.
+                  Use Start with a Template above to add
+                  roles for a service date.
                 </p>
               </div>
             ) : (
@@ -937,7 +1232,8 @@ export default function PlannerPage() {
                       </th>
 
                       {plannerDates.map((date) => {
-                        const state = getDatePublishState(date);
+                        const state =
+                          getDatePublishState(date);
 
                         return (
                           <th
@@ -945,7 +1241,10 @@ export default function PlannerPage() {
                             className="border-b border-r bg-white px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500"
                           >
                             <div className="space-y-1">
-                              <div>{shortDate(date)}</div>
+                              <div>
+                                {shortDate(date)}
+                              </div>
+
                               {state.total > 0 ? (
                                 <div
                                   className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${
@@ -954,7 +1253,9 @@ export default function PlannerPage() {
                                       : "bg-amber-50 text-amber-700"
                                   }`}
                                 >
-                                  {state.isPublished ? "Published" : "Draft"}
+                                  {state.isPublished
+                                    ? "Published"
+                                    : "Draft"}
                                 </div>
                               ) : null}
                             </div>
@@ -965,35 +1266,51 @@ export default function PlannerPage() {
                   </thead>
 
                   <tbody>
-                    {groupedRoles.map(({ category, roles: categoryRoles }) => {
-                      if (categoryRoles.length === 0) return null;
+                    {groupedRoles.map((group) => (
+                      <React.Fragment key={group.id}>
+                        <tr>
+                          <td
+                            colSpan={
+                              plannerDates.length + 1
+                            }
+                            className="bg-gray-100 px-4 py-3 text-sm font-semibold text-gray-900"
+                          >
+                            {group.name}
+                          </td>
+                        </tr>
 
-                      return (
-                        <React.Fragment key={category}>
-                          <tr>
-                            <td
-                              colSpan={plannerDates.length + 1}
-                              className="bg-gray-100 px-4 py-3 text-sm font-semibold text-gray-900"
-                            >
-                              {category}
+                        {group.roles.map((role) => (
+                          <tr
+                            key={role.id}
+                            className="border-b"
+                          >
+                            <td className="sticky left-0 z-10 border-r bg-white px-4 py-3 text-sm font-medium text-gray-900">
+                              {role.name}
                             </td>
-                          </tr>
 
-                          {categoryRoles.map((role) => (
-                            <tr key={role.id} className="border-b">
-                              <td className="sticky left-0 z-10 border-r bg-white px-4 py-3 text-sm font-medium text-gray-900">
-                                {role.name}
-                              </td>
+                            {plannerDates.map(
+                              (date) => {
+                                const entry =
+                                  findEntry(
+                                    role.id,
+                                    date
+                                  );
 
-                              {plannerDates.map((date) => {
-                                const entry = findEntry(role.id, date);
-                                const value = entry?.volunteer_id ?? "";
-                                const blackout = findBlackout(
-                                  value || null,
-                                  date
-                                );
+                                const value =
+                                  entry?.volunteer_id ??
+                                  "";
+
+                                const blackout =
+                                  findBlackout(
+                                    value || null,
+                                    date
+                                  );
+
                                 const cellKey = `${role.id}-${date}`;
-                                const isSaving = savingCell === cellKey;
+
+                                const isSaving =
+                                  savingCell ===
+                                  cellKey;
 
                                 return (
                                   <td
@@ -1004,26 +1321,45 @@ export default function PlannerPage() {
                                       <div className="min-w-44 space-y-1">
                                         <select
                                           value={value}
-                                          onChange={(e) =>
+                                          onChange={(
+                                            e
+                                          ) =>
                                             updatePlannerAssignment(
                                               entry,
                                               role.id,
                                               date,
-                                              e.target.value
+                                              e
+                                                .target
+                                                .value
                                             )
                                           }
-                                          disabled={isSaving}
+                                          disabled={
+                                            isSaving
+                                          }
                                           className="w-full rounded-lg border border-gray-300 bg-white px-2 py-2 text-sm shadow-sm"
                                         >
-                                          <option value="">Open</option>
-                                          {volunteers.map((volunteer) => (
-                                            <option
-                                              key={volunteer.id}
-                                              value={volunteer.id}
-                                            >
-                                              {volunteer.name}
-                                            </option>
-                                          ))}
+                                          <option value="">
+                                            Open
+                                          </option>
+
+                                          {volunteers.map(
+                                            (
+                                              volunteer
+                                            ) => (
+                                              <option
+                                                key={
+                                                  volunteer.id
+                                                }
+                                                value={
+                                                  volunteer.id
+                                                }
+                                              >
+                                                {
+                                                  volunteer.name
+                                                }
+                                              </option>
+                                            )
+                                          )}
                                         </select>
 
                                         {isSaving ? (
@@ -1041,6 +1377,7 @@ export default function PlannerPage() {
                                             {blackout.is_hard
                                               ? "⛔ Hard blackout"
                                               : "⚠ Unavailable"}
+
                                             {blackout.note
                                               ? `: ${blackout.note}`
                                               : ""}
@@ -1054,12 +1391,12 @@ export default function PlannerPage() {
                                     )}
                                   </td>
                                 );
-                              })}
-                            </tr>
-                          ))}
-                        </React.Fragment>
-                      );
-                    })}
+                              }
+                            )}
+                          </tr>
+                        ))}
+                      </React.Fragment>
+                    ))}
                   </tbody>
                 </table>
               </div>
