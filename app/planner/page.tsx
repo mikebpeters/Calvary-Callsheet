@@ -63,6 +63,14 @@ type ServiceTemplateRole = {
   sort_order: number;
 };
 
+type ServiceInstance = {
+  key: string;
+  date: string;
+  templateId: string | null;
+  templateName: string;
+  entries: ScheduleEntry[];
+};
+
 function addDays(input: Date, days: number) {
   const date = new Date(input);
   date.setDate(date.getDate() + days);
@@ -94,6 +102,16 @@ function shortDate(dateString: string) {
   });
 }
 
+function longDate(dateString: string) {
+  const date = new Date(`${dateString}T12:00:00`);
+
+  return date.toLocaleDateString("en-CA", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
 function notifyTopNavToRefresh() {
   window.dispatchEvent(new Event("notifications-updated"));
 }
@@ -115,7 +133,9 @@ export default function PlannerPage() {
 
   const [loading, setLoading] = useState(true);
   const [savingCell, setSavingCell] = useState<string | null>(null);
-  const [publishingDate, setPublishingDate] = useState<string | null>(null);
+  const [publishingService, setPublishingService] = useState<string | null>(
+    null
+  );
   const [creatingFromTemplate, setCreatingFromTemplate] = useState(false);
 
   const [error, setError] = useState("");
@@ -275,10 +295,40 @@ export default function PlannerPage() {
     }
   }
 
-  function findEntry(roleId: string, date: string) {
+  function getTemplateName(templateId: string | null) {
+    if (!templateId) {
+      return "Legacy Schedule";
+    }
+
+    return (
+      templates.find((template) => template.id === templateId)?.name ??
+      "Service"
+    );
+  }
+
+  function getServiceKey(date: string, templateId: string | null) {
+    return `${date}::${templateId ?? "legacy"}`;
+  }
+
+  function getServiceEntries(date: string, templateId: string | null) {
+    return entries.filter(
+      (entry) =>
+        entry.date === date &&
+        (entry.template_id ?? null) === templateId
+    );
+  }
+
+  function findEntry(
+    roleId: string,
+    date: string,
+    templateId: string | null
+  ) {
     return (
       entries.find(
-        (entry) => entry.role_id === roleId && entry.date === date
+        (entry) =>
+          entry.role_id === roleId &&
+          entry.date === date &&
+          (entry.template_id ?? null) === templateId
       ) ?? null
     );
   }
@@ -310,14 +360,13 @@ export default function PlannerPage() {
     return roles.find((role) => role.id === roleId)?.name ?? "a role";
   }
 
-  function getDateEntries(date: string) {
-    return entries.filter((entry) => entry.date === date);
-  }
+  function getServicePublishState(
+    date: string,
+    templateId: string | null
+  ) {
+    const serviceEntries = getServiceEntries(date, templateId);
 
-  function getDatePublishState(date: string) {
-    const dateEntries = getDateEntries(date);
-
-    if (dateEntries.length === 0) {
+    if (serviceEntries.length === 0) {
       return {
         total: 0,
         published: 0,
@@ -326,14 +375,19 @@ export default function PlannerPage() {
       };
     }
 
-    const published = dateEntries.filter((entry) => entry.published).length;
-    const assigned = dateEntries.filter((entry) => entry.volunteer_id).length;
+    const published = serviceEntries.filter(
+      (entry) => entry.published
+    ).length;
+
+    const assigned = serviceEntries.filter(
+      (entry) => entry.volunteer_id
+    ).length;
 
     return {
-      total: dateEntries.length,
+      total: serviceEntries.length,
       published,
       assigned,
-      isPublished: published === dateEntries.length,
+      isPublished: published === serviceEntries.length,
     };
   }
 
@@ -477,12 +531,15 @@ export default function PlannerPage() {
     notifyTopNavToRefresh();
   }
 
-  async function sendPublishNotifications(date: string) {
-    const dateEntries = getDateEntries(date).filter(
+  async function sendPublishNotifications(
+    date: string,
+    templateId: string | null
+  ) {
+    const serviceEntries = getServiceEntries(date, templateId).filter(
       (entry) => entry.volunteer_id
     );
 
-    for (const entry of dateEntries) {
+    for (const entry of serviceEntries) {
       const volunteer = getVolunteerById(entry.volunteer_id);
 
       if (!volunteer) continue;
@@ -495,7 +552,7 @@ export default function PlannerPage() {
       });
     }
 
-    if (dateEntries.length > 0) {
+    if (serviceEntries.length > 0) {
       notifyTopNavToRefresh();
     }
   }
@@ -527,10 +584,22 @@ export default function PlannerPage() {
         );
       }
 
+      /*
+       * IMPORTANT:
+       *
+       * Existing rows are checked by DATE + TEMPLATE.
+       *
+       * This means two different services can use the same role
+       * on the same date without being mistaken for each other.
+       */
+
       const { data: existingData, error: existingError } = await supabase
         .from("schedule_entries")
-        .select("id, date, role_id, volunteer_id, status, published")
+        .select(
+          "id, date, role_id, volunteer_id, status, published, template_id"
+        )
         .eq("date", templateDate)
+        .eq("template_id", selectedTemplateId)
         .in("role_id", roleIdsForTemplate);
 
       if (existingError) {
@@ -556,7 +625,9 @@ export default function PlannerPage() {
 
       if (rowsToInsert.length === 0) {
         setSuccessMessage(
-          `No new rows needed. ${shortDate(
+          `No new rows needed. ${getTemplateName(
+            selectedTemplateId
+          )} on ${shortDate(
             templateDate
           )} already has all roles from this template.`
         );
@@ -586,7 +657,9 @@ export default function PlannerPage() {
       setSuccessMessage(
         `Created ${insertedRows.length} draft schedule row${
           insertedRows.length === 1 ? "" : "s"
-        } for ${shortDate(templateDate)}.`
+        } for ${getTemplateName(selectedTemplateId)} on ${shortDate(
+          templateDate
+        )}.`
       );
     } catch (err) {
       console.error("Create schedule from template error:", err);
@@ -601,56 +674,77 @@ export default function PlannerPage() {
     }
   }
 
-  async function togglePublishedForDate(
+  async function togglePublishedForService(
     date: string,
+    templateId: string | null,
     nextPublished: boolean
   ) {
-    const dateEntries = getDateEntries(date);
+    const serviceEntries = getServiceEntries(date, templateId);
 
-    if (dateEntries.length === 0) {
-      setError("There are no schedule rows for this date yet.");
+    if (serviceEntries.length === 0) {
+      setError("There are no schedule rows for this service.");
       return;
     }
 
-    setPublishingDate(date);
+    const serviceKey = getServiceKey(date, templateId);
+
+    setPublishingService(serviceKey);
     setError("");
     setSuccessMessage("");
 
     const previousEntries = [...entries];
 
     try {
-      const { error: updateError } = await supabase
+      let query = supabase
         .from("schedule_entries")
         .update({
           published: nextPublished,
         })
         .eq("date", date);
 
+      /*
+       * NULL needs a different Supabase filter from a UUID.
+       */
+
+      if (templateId) {
+        query = query.eq("template_id", templateId);
+      } else {
+        query = query.is("template_id", null);
+      }
+
+      const { error: updateError } = await query;
+
       if (updateError) {
         throw new Error(
           `Could not ${
             nextPublished ? "publish" : "unpublish"
-          } ${shortDate(date)}: ${updateError.message}`
+          } ${getTemplateName(templateId)} on ${shortDate(
+            date
+          )}: ${updateError.message}`
         );
       }
 
       setEntries((current) =>
-        current.map((entry) =>
-          entry.date === date
+        current.map((entry) => {
+          const sameService =
+            entry.date === date &&
+            (entry.template_id ?? null) === templateId;
+
+          return sameService
             ? {
                 ...entry,
                 published: nextPublished,
               }
-            : entry
-        )
+            : entry;
+        })
       );
 
       if (nextPublished) {
         try {
-          await sendPublishNotifications(date);
+          await sendPublishNotifications(date, templateId);
 
           setSuccessMessage(
-            `${shortDate(
+            `${getTemplateName(templateId)} on ${shortDate(
               date
             )} published. Assigned volunteers have been notified.`
           );
@@ -667,14 +761,14 @@ export default function PlannerPage() {
           );
 
           setSuccessMessage(
-            `${shortDate(
+            `${getTemplateName(templateId)} on ${shortDate(
               date
             )} was published, but check the notification error above.`
           );
         }
       } else {
         setSuccessMessage(
-          `${shortDate(
+          `${getTemplateName(templateId)} on ${shortDate(
             date
           )} returned to draft. No cancellation notifications were sent.`
         );
@@ -692,7 +786,7 @@ export default function PlannerPage() {
             } this schedule.`
       );
     } finally {
-      setPublishingDate(null);
+      setPublishingService(null);
     }
   }
 
@@ -742,10 +836,18 @@ export default function PlannerPage() {
       }
     }
 
-    const cellKey = `${roleId}-${date}`;
+    const cellKey = entry.id;
     const previousEntries = [...entries];
 
-    const dateWasPublished = getDatePublishState(date).isPublished;
+    /*
+     * Publication is checked for THIS SERVICE,
+     * not everything on the date.
+     */
+
+    const serviceWasPublished = getServicePublishState(
+      date,
+      entry.template_id
+    ).isPublished;
 
     setSavingCell(cellKey);
     setError("");
@@ -778,7 +880,7 @@ export default function PlannerPage() {
         );
       }
 
-      if (dateWasPublished) {
+      if (serviceWasPublished) {
         try {
           await createAssignmentNotifications({
             roleId,
@@ -834,9 +936,9 @@ export default function PlannerPage() {
         }
       } else {
         setSuccessMessage(
-          `Draft assignment updated for ${shortDate(
-            date
-          )}. No notifications were sent.`
+          `Draft assignment updated for ${getTemplateName(
+            entry.template_id
+          )} on ${shortDate(date)}. No notifications were sent.`
         );
       }
     } catch (err) {
@@ -854,29 +956,72 @@ export default function PlannerPage() {
     }
   }
 
-  const visibleRoleIds = useMemo(() => {
-    const ids = new Set<string>();
+  /*
+   * Build actual service instances.
+   *
+   * A service is DATE + TEMPLATE.
+   *
+   * Legacy rows with no template_id are grouped together
+   * as a legacy schedule for that date.
+   */
+
+  const serviceInstances = useMemo<ServiceInstance[]>(() => {
+    const map = new Map<string, ServiceInstance>();
 
     entries.forEach((entry) => {
-      if (plannerDates.includes(entry.date)) {
-        ids.add(entry.role_id);
+      const templateId = entry.template_id ?? null;
+      const key = getServiceKey(entry.date, templateId);
+
+      const existing = map.get(key);
+
+      if (existing) {
+        existing.entries.push(entry);
+      } else {
+        map.set(key, {
+          key,
+          date: entry.date,
+          templateId,
+          templateName: templateId
+            ? templates.find((template) => template.id === templateId)?.name ??
+              "Service"
+            : "Legacy Schedule",
+          entries: [entry],
+        });
       }
     });
 
-    return ids;
-  }, [entries, plannerDates]);
+    return Array.from(map.values()).sort((a, b) => {
+      const dateCompare = a.date.localeCompare(b.date);
 
-  const visibleRoles = useMemo(() => {
-    return roles.filter((role) => visibleRoleIds.has(role.id));
-  }, [roles, visibleRoleIds]);
+      if (dateCompare !== 0) return dateCompare;
 
-  const groupedRoles = useMemo(() => {
+      return a.templateName.localeCompare(b.templateName);
+    });
+  }, [entries, templates]);
+
+  const selectedTemplate = templates.find(
+    (template) => template.id === selectedTemplateId
+  );
+
+  const selectedTemplateRoleCount = templateRoles.filter(
+    (item) => item.template_id === selectedTemplateId
+  ).length;
+
+  function getGroupedRolesForService(service: ServiceInstance) {
+    const serviceRoleIds = new Set(
+      service.entries.map((entry) => entry.role_id)
+    );
+
+    const serviceRoles = roles.filter((role) =>
+      serviceRoleIds.has(role.id)
+    );
+
     const groups = roleCategories
       .map((category) => ({
         id: category.id,
         name: category.name,
         sort_order: category.sort_order,
-        roles: visibleRoles
+        roles: serviceRoles
           .filter((role) => role.category_id === category.id)
           .sort(
             (a, b) =>
@@ -886,7 +1031,7 @@ export default function PlannerPage() {
       }))
       .filter((group) => group.roles.length > 0);
 
-    const uncategorizedRoles = visibleRoles
+    const uncategorizedRoles = serviceRoles
       .filter((role) => !role.category_id)
       .sort(
         (a, b) =>
@@ -908,15 +1053,7 @@ export default function PlannerPage() {
         a.sort_order - b.sort_order ||
         a.name.localeCompare(b.name)
     );
-  }, [roleCategories, visibleRoles]);
-
-  const selectedTemplate = templates.find(
-    (template) => template.id === selectedTemplateId
-  );
-
-  const selectedTemplateRoleCount = templateRoles.filter(
-    (item) => item.template_id === selectedTemplateId
-  ).length;
+  }
 
   return (
     <main className="mx-auto max-w-7xl px-6 py-10">
@@ -930,7 +1067,7 @@ export default function PlannerPage() {
 
               <p className="mt-1 text-sm text-gray-600">
                 Create draft schedules from templates, assign volunteers, then
-                publish a Sunday when it is ready.
+                publish each service when it is ready.
               </p>
             </div>
 
@@ -969,8 +1106,8 @@ export default function PlannerPage() {
               </h2>
 
               <p className="mt-1 max-w-3xl text-sm text-gray-600">
-                Use a service template to create the structure for a Sunday
-                before assigning volunteers. New rows are created as drafts.
+                Choose a service date and template. The roles from that
+                template will be created as a separate draft service.
               </p>
 
               <div className="mt-3">
@@ -1061,37 +1198,42 @@ export default function PlannerPage() {
           ) : null}
         </section>
 
-        {!loading && visibleRoles.length > 0 ? (
+        {!loading && serviceInstances.length > 0 ? (
           <section className="rounded-2xl border bg-white p-6 shadow-sm">
             <h2 className="text-lg font-semibold text-gray-900">
-              Publish Sundays
+              Publish Services
             </h2>
 
             <p className="mt-1 text-sm text-gray-600">
-              Draft schedules can be edited without notifying volunteers.
-              Publishing makes the schedule visible and sends assignment
-              notifications. Changes made after publication notify only the
-              affected volunteers.
+              Draft services can be edited without notifying volunteers.
+              Publishing makes that service official and sends assignment
+              notifications. Different services on the same date are handled
+              independently.
             </p>
 
             <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              {plannerDates.map((date) => {
-                const state = getDatePublishState(date);
-                const isSaving = publishingDate === date;
+              {serviceInstances.map((service) => {
+                const state = getServicePublishState(
+                  service.date,
+                  service.templateId
+                );
 
-                if (state.total === 0) {
-                  return null;
-                }
+                const isSaving =
+                  publishingService === service.key;
 
                 return (
                   <div
-                    key={date}
+                    key={service.key}
                     className="rounded-xl border border-stone-200 bg-stone-50 p-4"
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <p className="font-medium text-gray-900">
-                          {shortDate(date)}
+                          {service.templateName}
+                        </p>
+
+                        <p className="mt-1 text-sm text-gray-700">
+                          {longDate(service.date)}
                         </p>
 
                         <p className="mt-1 text-xs text-gray-600">
@@ -1113,7 +1255,11 @@ export default function PlannerPage() {
                     <button
                       type="button"
                       onClick={() =>
-                        togglePublishedForDate(date, !state.isPublished)
+                        togglePublishedForService(
+                          service.date,
+                          service.templateId,
+                          !state.isPublished
+                        )
                       }
                       disabled={isSaving}
                       className="mt-4 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-900 shadow-sm hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-60"
@@ -1135,125 +1281,152 @@ export default function PlannerPage() {
           <section className="rounded-2xl border bg-white p-6 shadow-sm">
             <p className="text-sm text-gray-600">Loading planner...</p>
           </section>
-        ) : (
+        ) : serviceInstances.length === 0 ? (
           <section className="rounded-2xl border bg-white p-6 shadow-sm">
-            <div className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-500">
-              Scroll sideways to view all 12 weeks
+            <div className="rounded-xl border border-stone-200 bg-stone-50 p-6">
+              <h2 className="text-lg font-semibold text-gray-900">
+                No services yet
+              </h2>
+
+              <p className="mt-2 text-sm text-gray-600">
+                Use Start with a Template above to create a service schedule.
+              </p>
             </div>
+          </section>
+        ) : (
+          <div className="space-y-6">
+            {serviceInstances.map((service) => {
+              const groupedRoles =
+                getGroupedRolesForService(service);
 
-            {visibleRoles.length === 0 ? (
-              <div className="rounded-xl border border-stone-200 bg-stone-50 p-6">
-                <h2 className="text-lg font-semibold text-gray-900">
-                  No schedule rows yet
-                </h2>
+              const state = getServicePublishState(
+                service.date,
+                service.templateId
+              );
 
-                <p className="mt-2 text-sm text-gray-600">
-                  Use Start with a Template above to add roles for a service
-                  date.
-                </p>
-              </div>
-            ) : (
-              <div className="max-w-full overflow-x-auto rounded-xl border border-gray-200">
-                <table className="min-w-[2400px] border-collapse">
-                  <thead>
-                    <tr>
-                      <th className="sticky left-0 z-20 border-b border-r bg-white px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
-                        Role
-                      </th>
+              return (
+                <section
+                  key={service.key}
+                  className="rounded-2xl border bg-white p-6 shadow-sm"
+                >
+                  <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <h2 className="text-xl font-semibold text-gray-900">
+                        {service.templateName}
+                      </h2>
 
-                      {plannerDates.map((date) => {
-                        const state = getDatePublishState(date);
+                      <p className="mt-1 text-sm text-gray-600">
+                        {longDate(service.date)}
+                      </p>
+                    </div>
 
-                        return (
-                          <th
-                            key={date}
-                            className="border-b border-r bg-white px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500"
-                          >
-                            <div className="space-y-1">
-                              <div>{shortDate(date)}</div>
+                    <span
+                      className={`inline-flex w-fit rounded-full px-3 py-1 text-xs font-medium ${
+                        state.isPublished
+                          ? "bg-emerald-50 text-emerald-700"
+                          : "bg-amber-50 text-amber-700"
+                      }`}
+                    >
+                      {state.isPublished ? "Published" : "Draft"}
+                    </span>
+                  </div>
 
-                              {state.total > 0 ? (
-                                <div
-                                  className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                                    state.isPublished
-                                      ? "bg-emerald-50 text-emerald-700"
-                                      : "bg-amber-50 text-amber-700"
-                                  }`}
-                                >
-                                  {state.isPublished
-                                    ? "Published"
-                                    : "Draft"}
-                                </div>
-                              ) : null}
-                            </div>
-                          </th>
-                        );
-                      })}
-                    </tr>
-                  </thead>
+                  {service.templateId === null ? (
+                    <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+                      This is an existing schedule created before service
+                      templates were tracked. It will continue to work
+                      normally.
+                    </div>
+                  ) : null}
 
-                  <tbody>
-                    {groupedRoles.map((group) => (
-                      <React.Fragment key={group.id}>
+                  <div className="overflow-x-auto rounded-xl border border-gray-200">
+                    <table className="w-full min-w-[700px] border-collapse">
+                      <thead>
                         <tr>
-                          <td
-                            colSpan={plannerDates.length + 1}
-                            className="bg-gray-100 px-4 py-3 text-sm font-semibold text-gray-900"
-                          >
-                            {group.name}
-                          </td>
+                          <th className="border-b bg-white px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
+                            Role
+                          </th>
+
+                          <th className="border-b bg-white px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
+                            Volunteer
+                          </th>
                         </tr>
+                      </thead>
 
-                        {group.roles.map((role) => (
-                          <tr key={role.id} className="border-b">
-                            <td className="sticky left-0 z-10 border-r bg-white px-4 py-3 text-sm font-medium text-gray-900">
-                              {role.name}
-                            </td>
+                      <tbody>
+                        {groupedRoles.map((group) => (
+                          <React.Fragment
+                            key={`${service.key}-${group.id}`}
+                          >
+                            <tr>
+                              <td
+                                colSpan={2}
+                                className="bg-gray-100 px-4 py-3 text-sm font-semibold text-gray-900"
+                              >
+                                {group.name}
+                              </td>
+                            </tr>
 
-                            {plannerDates.map((date) => {
-                              const entry = findEntry(role.id, date);
+                            {group.roles.map((role) => {
+                              const entry = findEntry(
+                                role.id,
+                                service.date,
+                                service.templateId
+                              );
 
-                              const value = entry?.volunteer_id ?? "";
+                              if (!entry) {
+                                return null;
+                              }
+
+                              const value =
+                                entry.volunteer_id ?? "";
 
                               const blackout = findBlackout(
                                 value || null,
-                                date
+                                service.date
                               );
 
-                              const cellKey = `${role.id}-${date}`;
-
-                              const isSaving = savingCell === cellKey;
+                              const isSaving =
+                                savingCell === entry.id;
 
                               return (
-                                <td
-                                  key={cellKey}
-                                  className="border-r px-4 py-3 align-top"
+                                <tr
+                                  key={entry.id}
+                                  className="border-b last:border-b-0"
                                 >
-                                  {entry ? (
-                                    <div className="min-w-44 space-y-1">
+                                  <td className="px-4 py-3 text-sm font-medium text-gray-900">
+                                    {role.name}
+                                  </td>
+
+                                  <td className="px-4 py-3">
+                                    <div className="max-w-md space-y-1">
                                       <select
                                         value={value}
                                         onChange={(e) =>
                                           updatePlannerAssignment(
                                             entry,
                                             role.id,
-                                            date,
+                                            service.date,
                                             e.target.value
                                           )
                                         }
                                         disabled={isSaving}
-                                        className="w-full rounded-lg border border-gray-300 bg-white px-2 py-2 text-sm shadow-sm"
+                                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm"
                                       >
-                                        <option value="">Open</option>
+                                        <option value="">
+                                          Open
+                                        </option>
 
-                                        {volunteers.map((volunteer) => (
-                                          <option
-                                            key={volunteer.id}
-                                            value={volunteer.id}
-                                          >
-                                            {volunteer.name}
-                                          </option>
-                                        ))}
+                                        {volunteers.map(
+                                          (volunteer) => (
+                                            <option
+                                              key={volunteer.id}
+                                              value={volunteer.id}
+                                            >
+                                              {volunteer.name}
+                                            </option>
+                                          )
+                                        )}
                                       </select>
 
                                       {isSaving ? (
@@ -1278,23 +1451,19 @@ export default function PlannerPage() {
                                         </div>
                                       ) : null}
                                     </div>
-                                  ) : (
-                                    <span className="text-sm text-gray-500">
-                                      No row
-                                    </span>
-                                  )}
-                                </td>
+                                  </td>
+                                </tr>
                               );
                             })}
-                          </tr>
+                          </React.Fragment>
                         ))}
-                      </React.Fragment>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              );
+            })}
+          </div>
         )}
       </div>
     </main>
