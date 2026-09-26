@@ -4,13 +4,19 @@ import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
 type AppRole = "volunteer" | "ministry_leader" | "admin";
-type RoleCategory = "Lead" | "Platform" | "AV" | "Other";
+
+type RoleCategory = {
+  id: string;
+  name: string;
+  sort_order: number;
+  active: boolean;
+};
 
 type RoleItem = {
   id: string;
   name: string;
   active: boolean;
-  category: RoleCategory;
+  category_id: string | null;
   sort_order: number;
   lead_volunteer_id: string | null;
 };
@@ -20,8 +26,6 @@ type Volunteer = {
   name: string;
   active: boolean;
 };
-
-const categoryOptions: RoleCategory[] = ["Lead", "Platform", "AV", "Other"];
 
 function prettyUserRole(role: AppRole | null) {
   if (role === "admin") return "Admin";
@@ -34,18 +38,19 @@ export default function RolesPage() {
   const supabase = useMemo(() => createClient(), []);
 
   const [roles, setRoles] = useState<RoleItem[]>([]);
+  const [categories, setCategories] = useState<RoleCategory[]>([]);
   const [volunteers, setVolunteers] = useState<Volunteer[]>([]);
 
   const [newRoleName, setNewRoleName] = useState("");
   const [newRoleActive, setNewRoleActive] = useState(true);
-  const [newCategory, setNewCategory] = useState<RoleCategory>("Other");
+  const [newCategoryId, setNewCategoryId] = useState("");
   const [newSortOrder, setNewSortOrder] = useState("999");
   const [newLeadVolunteerId, setNewLeadVolunteerId] = useState("");
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editActive, setEditActive] = useState(true);
-  const [editCategory, setEditCategory] = useState<RoleCategory>("Other");
+  const [editCategoryId, setEditCategoryId] = useState("");
   const [editSortOrder, setEditSortOrder] = useState("999");
   const [editLeadVolunteerId, setEditLeadVolunteerId] = useState("");
 
@@ -63,9 +68,39 @@ export default function RolesPage() {
     setLoading(true);
     setError(null);
 
+    const { data: categoriesData, error: categoriesError } = await supabase
+      .from("role_categories")
+      .select("id, name, sort_order, active")
+      .order("sort_order", { ascending: true })
+      .order("name", { ascending: true });
+
+    if (categoriesError) {
+      setError(categoriesError.message || "Failed to load role categories.");
+      setCategories([]);
+      setLoading(false);
+      return;
+    }
+
+    const safeCategories: RoleCategory[] = (categoriesData ?? []).map(
+      (category) => ({
+        id: category.id,
+        name: category.name,
+        sort_order: category.sort_order ?? 999,
+        active: category.active ?? true,
+      })
+    );
+
+    setCategories(safeCategories);
+
+    const activeCategories = safeCategories.filter(
+      (category) => category.active
+    );
+
     const { data: rolesData, error: rolesError } = await supabase
       .from("roles")
-      .select("id, name, active, category, sort_order, lead_volunteer_id")
+      .select(
+        "id, name, active, category_id, sort_order, lead_volunteer_id"
+      )
       .order("sort_order", { ascending: true })
       .order("name", { ascending: true });
 
@@ -79,8 +114,8 @@ export default function RolesPage() {
     const safeRoles: RoleItem[] = (rolesData ?? []).map((role) => ({
       id: role.id,
       name: role.name,
-      active: role.active,
-      category: (role.category ?? "Other") as RoleCategory,
+      active: role.active ?? true,
+      category_id: role.category_id ?? null,
       sort_order: role.sort_order ?? 999,
       lead_volunteer_id: role.lead_volunteer_id ?? null,
     }));
@@ -101,6 +136,17 @@ export default function RolesPage() {
     }
 
     setVolunteers(volunteersData ?? []);
+
+    if (!newCategoryId && activeCategories.length > 0) {
+      const otherCategory = activeCategories.find(
+        (category) => category.name.toLowerCase() === "other"
+      );
+
+      setNewCategoryId(
+        otherCategory?.id ?? activeCategories[0].id
+      );
+    }
+
     setLoading(false);
   }
 
@@ -150,16 +196,33 @@ export default function RolesPage() {
     }
 
     checkAccessAndLoad();
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase]);
 
+  const categoryNameById = useMemo(() => {
+    return new Map(
+      categories.map((category) => [category.id, category.name])
+    );
+  }, [categories]);
+
   const volunteerNameById = useMemo(() => {
-    return new Map(volunteers.map((volunteer) => [volunteer.id, volunteer.name]));
+    return new Map(
+      volunteers.map((volunteer) => [volunteer.id, volunteer.name])
+    );
   }, [volunteers]);
+
+  const activeCategories = useMemo(() => {
+    return categories.filter((category) => category.active);
+  }, [categories]);
 
   const filteredRoles = useMemo(() => {
     return roles.filter((role) => {
       const search = searchTerm.trim().toLowerCase();
+
+      const categoryName = role.category_id
+        ? categoryNameById.get(role.category_id)?.toLowerCase() ?? ""
+        : "";
 
       const leadName = role.lead_volunteer_id
         ? volunteerNameById.get(role.lead_volunteer_id)?.toLowerCase() ?? ""
@@ -167,16 +230,30 @@ export default function RolesPage() {
 
       const matchesSearch =
         role.name.toLowerCase().includes(search) ||
-        role.category.toLowerCase().includes(search) ||
+        categoryName.includes(search) ||
         leadName.includes(search);
 
       const matchesActiveFilter = showInactive ? true : role.active;
 
       return matchesSearch && matchesActiveFilter;
     });
-  }, [roles, searchTerm, showInactive, volunteerNameById]);
+  }, [
+    roles,
+    searchTerm,
+    showInactive,
+    categoryNameById,
+    volunteerNameById,
+  ]);
 
   const activeCount = roles.filter((role) => role.active).length;
+
+  function getDefaultCategoryId() {
+    const otherCategory = activeCategories.find(
+      (category) => category.name.toLowerCase() === "other"
+    );
+
+    return otherCategory?.id ?? activeCategories[0]?.id ?? "";
+  }
 
   async function handleAddRole(e: React.FormEvent) {
     e.preventDefault();
@@ -194,6 +271,11 @@ export default function RolesPage() {
       return;
     }
 
+    if (!newCategoryId) {
+      setError("Please select a category.");
+      return;
+    }
+
     setSaving(true);
     setError(null);
 
@@ -201,7 +283,7 @@ export default function RolesPage() {
       {
         name: trimmedName,
         active: newRoleActive,
-        category: newCategory,
+        category_id: newCategoryId,
         sort_order: parsedSortOrder,
         lead_volunteer_id: newLeadVolunteerId || null,
       },
@@ -215,9 +297,10 @@ export default function RolesPage() {
 
     setNewRoleName("");
     setNewRoleActive(true);
-    setNewCategory("Other");
+    setNewCategoryId(getDefaultCategoryId());
     setNewSortOrder("999");
     setNewLeadVolunteerId("");
+
     setSaving(false);
     await loadData();
   }
@@ -226,7 +309,7 @@ export default function RolesPage() {
     setEditingId(role.id);
     setEditName(role.name);
     setEditActive(role.active);
-    setEditCategory(role.category);
+    setEditCategoryId(role.category_id ?? getDefaultCategoryId());
     setEditSortOrder(String(role.sort_order ?? 999));
     setEditLeadVolunteerId(role.lead_volunteer_id ?? "");
     setError(null);
@@ -236,7 +319,7 @@ export default function RolesPage() {
     setEditingId(null);
     setEditName("");
     setEditActive(true);
-    setEditCategory("Other");
+    setEditCategoryId("");
     setEditSortOrder("999");
     setEditLeadVolunteerId("");
   }
@@ -255,6 +338,11 @@ export default function RolesPage() {
       return;
     }
 
+    if (!editCategoryId) {
+      setError("Please select a category.");
+      return;
+    }
+
     setSaving(true);
     setError(null);
 
@@ -263,7 +351,7 @@ export default function RolesPage() {
       .update({
         name: trimmedName,
         active: editActive,
-        category: editCategory,
+        category_id: editCategoryId,
         sort_order: parsedSortOrder,
         lead_volunteer_id: editLeadVolunteerId || null,
       })
@@ -297,15 +385,24 @@ export default function RolesPage() {
   }
 
   async function handleDeleteRole(id: string) {
-    const confirmed = window.confirm("Delete this role?");
+    const confirmed = window.confirm(
+      "Delete this role? If it has been used in schedules or templates, it may be better to deactivate it instead."
+    );
+
     if (!confirmed) return;
 
     setError(null);
 
-    const { error } = await supabase.from("roles").delete().eq("id", id);
+    const { error } = await supabase
+      .from("roles")
+      .delete()
+      .eq("id", id);
 
     if (error) {
-      setError(error.message || "Failed to delete role.");
+      setError(
+        error.message ||
+          "Failed to delete role. If the role is already in use, deactivate it instead."
+      );
       return;
     }
 
@@ -319,8 +416,10 @@ export default function RolesPage() {
           <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
             <div>
               <h1 className="text-2xl font-bold text-gray-900">Roles</h1>
+
               <p className="mt-2 text-sm text-gray-700">
-                Add, edit, organize, and assign activity leads for ministry roles.
+                Add, edit, organize, and assign activity leads for ministry
+                roles.
               </p>
             </div>
 
@@ -343,9 +442,11 @@ export default function RolesPage() {
             <h2 className="text-lg font-semibold text-amber-900">
               Access restricted
             </h2>
+
             <p className="mt-2 text-sm text-amber-800">
               This page is available only to Admins.
             </p>
+
             {userRole && (
               <p className="mt-2 text-sm text-amber-800">
                 Your current role: {prettyUserRole(userRole)}
@@ -362,7 +463,9 @@ export default function RolesPage() {
 
             <div className="grid gap-6 lg:grid-cols-[1fr_1.6fr]">
               <section className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-stone-200">
-                <h2 className="text-lg font-semibold text-gray-900">Add Role</h2>
+                <h2 className="text-lg font-semibold text-gray-900">
+                  Add Role
+                </h2>
 
                 <form onSubmit={handleAddRole} className="mt-6 space-y-4">
                   <div>
@@ -372,6 +475,7 @@ export default function RolesPage() {
                     >
                       Role Name
                     </label>
+
                     <input
                       id="role-name"
                       type="text"
@@ -386,16 +490,17 @@ export default function RolesPage() {
                     <label className="mb-1 block text-sm font-medium text-gray-800">
                       Category
                     </label>
+
                     <select
-                      value={newCategory}
-                      onChange={(e) =>
-                        setNewCategory(e.target.value as RoleCategory)
-                      }
+                      value={newCategoryId}
+                      onChange={(e) => setNewCategoryId(e.target.value)}
                       className="w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-gray-900"
                     >
-                      {categoryOptions.map((category) => (
-                        <option key={category} value={category}>
-                          {category}
+                      <option value="">Select category</option>
+
+                      {activeCategories.map((category) => (
+                        <option key={category.id} value={category.id}>
+                          {category.name}
                         </option>
                       ))}
                     </select>
@@ -405,6 +510,7 @@ export default function RolesPage() {
                     <label className="mb-1 block text-sm font-medium text-gray-800">
                       Sort Order
                     </label>
+
                     <input
                       type="number"
                       value={newSortOrder}
@@ -417,12 +523,16 @@ export default function RolesPage() {
                     <label className="mb-1 block text-sm font-medium text-gray-800">
                       Activity Lead
                     </label>
+
                     <select
                       value={newLeadVolunteerId}
-                      onChange={(e) => setNewLeadVolunteerId(e.target.value)}
+                      onChange={(e) =>
+                        setNewLeadVolunteerId(e.target.value)
+                      }
                       className="w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-gray-900"
                     >
                       <option value="">No lead assigned</option>
+
                       {volunteers.map((volunteer) => (
                         <option key={volunteer.id} value={volunteer.id}>
                           {volunteer.name}
@@ -435,18 +545,26 @@ export default function RolesPage() {
                     <input
                       type="checkbox"
                       checked={newRoleActive}
-                      onChange={(e) => setNewRoleActive(e.target.checked)}
+                      onChange={(e) =>
+                        setNewRoleActive(e.target.checked)
+                      }
                     />
                     Active
                   </label>
 
                   <button
                     type="submit"
-                    disabled={saving}
+                    disabled={saving || activeCategories.length === 0}
                     className="rounded bg-gray-900 px-4 py-2 text-sm text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {saving ? "Adding..." : "Add Role"}
                   </button>
+
+                  {activeCategories.length === 0 && (
+                    <p className="text-sm text-amber-700">
+                      No active role categories are available.
+                    </p>
+                  )}
                 </form>
               </section>
 
@@ -469,7 +587,9 @@ export default function RolesPage() {
                       <input
                         type="checkbox"
                         checked={showInactive}
-                        onChange={(e) => setShowInactive(e.target.checked)}
+                        onChange={(e) =>
+                          setShowInactive(e.target.checked)
+                        }
                       />
                       Show inactive
                     </label>
@@ -487,9 +607,15 @@ export default function RolesPage() {
                 ) : (
                   <div className="mt-6 space-y-3">
                     {filteredRoles.map((role) => {
+                      const categoryName = role.category_id
+                        ? categoryNameById.get(role.category_id) ??
+                          "Uncategorized"
+                        : "Uncategorized";
+
                       const leadName = role.lead_volunteer_id
-                        ? volunteerNameById.get(role.lead_volunteer_id) ??
-                          "Unknown lead"
+                        ? volunteerNameById.get(
+                            role.lead_volunteer_id
+                          ) ?? "Unknown lead"
                         : "No lead assigned";
 
                       return (
@@ -503,10 +629,13 @@ export default function RolesPage() {
                                 <label className="mb-1 block text-sm font-medium text-gray-800">
                                   Role Name
                                 </label>
+
                                 <input
                                   type="text"
                                   value={editName}
-                                  onChange={(e) => setEditName(e.target.value)}
+                                  onChange={(e) =>
+                                    setEditName(e.target.value)
+                                  }
                                   className="w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-gray-900"
                                 />
                               </div>
@@ -516,18 +645,27 @@ export default function RolesPage() {
                                   <label className="mb-1 block text-sm font-medium text-gray-800">
                                     Category
                                   </label>
+
                                   <select
-                                    value={editCategory}
+                                    value={editCategoryId}
                                     onChange={(e) =>
-                                      setEditCategory(
-                                        e.target.value as RoleCategory
-                                      )
+                                      setEditCategoryId(e.target.value)
                                     }
                                     className="w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-gray-900"
                                   >
-                                    {categoryOptions.map((category) => (
-                                      <option key={category} value={category}>
-                                        {category}
+                                    <option value="">
+                                      Select category
+                                    </option>
+
+                                    {categories.map((category) => (
+                                      <option
+                                        key={category.id}
+                                        value={category.id}
+                                      >
+                                        {category.name}
+                                        {!category.active
+                                          ? " (inactive)"
+                                          : ""}
                                       </option>
                                     ))}
                                   </select>
@@ -537,6 +675,7 @@ export default function RolesPage() {
                                   <label className="mb-1 block text-sm font-medium text-gray-800">
                                     Sort Order
                                   </label>
+
                                   <input
                                     type="number"
                                     value={editSortOrder}
@@ -552,14 +691,20 @@ export default function RolesPage() {
                                 <label className="mb-1 block text-sm font-medium text-gray-800">
                                   Activity Lead
                                 </label>
+
                                 <select
                                   value={editLeadVolunteerId}
                                   onChange={(e) =>
-                                    setEditLeadVolunteerId(e.target.value)
+                                    setEditLeadVolunteerId(
+                                      e.target.value
+                                    )
                                   }
                                   className="w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-gray-900"
                                 >
-                                  <option value="">No lead assigned</option>
+                                  <option value="">
+                                    No lead assigned
+                                  </option>
+
                                   {volunteers.map((volunteer) => (
                                     <option
                                       key={volunteer.id}
@@ -585,12 +730,15 @@ export default function RolesPage() {
                               <div className="flex flex-wrap gap-2">
                                 <button
                                   type="button"
-                                  onClick={() => handleSaveEdit(role.id)}
+                                  onClick={() =>
+                                    handleSaveEdit(role.id)
+                                  }
                                   disabled={saving}
                                   className="rounded bg-gray-900 px-3 py-2 text-sm text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
                                 >
-                                  Save
+                                  {saving ? "Saving..." : "Save"}
                                 </button>
+
                                 <button
                                   type="button"
                                   onClick={cancelEdit}
@@ -607,6 +755,7 @@ export default function RolesPage() {
                                   <p className="font-semibold text-gray-900">
                                     {role.name}
                                   </p>
+
                                   <span
                                     className={`rounded-full px-3 py-1 text-xs font-medium ${
                                       role.active
@@ -614,17 +763,21 @@ export default function RolesPage() {
                                         : "bg-stone-200 text-stone-700"
                                     }`}
                                   >
-                                    {role.active ? "Active" : "Inactive"}
+                                    {role.active
+                                      ? "Active"
+                                      : "Inactive"}
                                   </span>
                                 </div>
 
                                 <div className="mt-2 flex flex-wrap gap-2 text-xs text-gray-600">
                                   <span className="rounded-full bg-stone-100 px-3 py-1">
-                                    {role.category}
+                                    {categoryName}
                                   </span>
+
                                   <span className="rounded-full bg-stone-100 px-3 py-1">
                                     Sort {role.sort_order}
                                   </span>
+
                                   <span className="rounded-full bg-blue-50 px-3 py-1 text-blue-700">
                                     Lead: {leadName}
                                   </span>
@@ -642,15 +795,21 @@ export default function RolesPage() {
 
                                 <button
                                   type="button"
-                                  onClick={() => handleToggleActive(role)}
+                                  onClick={() =>
+                                    handleToggleActive(role)
+                                  }
                                   className="rounded bg-stone-200 px-3 py-2 text-sm text-gray-800 hover:bg-stone-300"
                                 >
-                                  {role.active ? "Deactivate" : "Activate"}
+                                  {role.active
+                                    ? "Deactivate"
+                                    : "Activate"}
                                 </button>
 
                                 <button
                                   type="button"
-                                  onClick={() => handleDeleteRole(role.id)}
+                                  onClick={() =>
+                                    handleDeleteRole(role.id)
+                                  }
                                   className="rounded bg-red-600 px-3 py-2 text-sm text-white hover:bg-red-700"
                                 >
                                   Delete
