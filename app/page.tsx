@@ -14,10 +14,8 @@ type Role = {
 
 type Volunteer = {
   id: string;
-  user_id?: string | null;
   name: string;
   public_name: string | null;
-  email?: string | null;
 };
 
 type CurrentVolunteer = {
@@ -85,14 +83,17 @@ function toYmd(date: Date) {
   const year = date.getFullYear();
   const month = `${date.getMonth() + 1}`.padStart(2, "0");
   const day = `${date.getDate()}`.padStart(2, "0");
+
   return `${year}-${month}-${day}`;
 }
 
 function getNextSunday() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
+
   const day = today.getDay();
   const daysUntilSunday = day === 0 ? 0 : 7 - day;
+
   return addDays(today, daysUntilSunday);
 }
 
@@ -108,7 +109,6 @@ function prettyDate(date: Date) {
 function prettyUserRole(role: AppRole | null) {
   if (role === "admin") return "Admin";
   if (role === "ministry_leader") return "Ministry Leader";
-  if (role === "volunteer") return "Volunteer";
   return "Volunteer";
 }
 
@@ -124,22 +124,25 @@ function getRoleIcon(roleName: string) {
     key.includes("host") ||
     key.includes("greeter") ||
     key.includes("welcome")
-  )
+  ) {
     return "👋";
+  }
 
   if (
     key.includes("kids") ||
     key.includes("children") ||
     key.includes("nursery")
-  )
+  ) {
     return "👶";
+  }
 
   if (
     key.includes("coffee") ||
     key.includes("cafe") ||
     key.includes("hospitality")
-  )
+  ) {
     return "☕";
+  }
 
   if (key.includes("prayer")) return "🙏";
   if (key.includes("security")) return "🛡️";
@@ -236,6 +239,16 @@ function getDashboardItems(role: AppRole | null): DashboardItem[] {
 export default function HomePage() {
   const supabase = useMemo(() => createClient(), []);
 
+  const firstSunday = useMemo(() => getNextSunday(), []);
+
+  const [selectedSunday, setSelectedSunday] =
+    useState<Date>(firstSunday);
+
+  const selectedSundayStr = useMemo(
+    () => toYmd(selectedSunday),
+    [selectedSunday]
+  );
+
   const [roles, setRoles] = useState<Role[]>([]);
   const [volunteers, setVolunteers] = useState<Volunteer[]>([]);
   const [entries, setEntries] = useState<ScheduleEntry[]>([]);
@@ -248,7 +261,6 @@ export default function HomePage() {
 
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [userRole, setUserRole] = useState<AppRole | null>(null);
-  const [userId, setUserId] = useState<string | null>(null);
 
   const [currentVolunteer, setCurrentVolunteer] =
     useState<CurrentVolunteer | null>(null);
@@ -261,9 +273,6 @@ export default function HomePage() {
   const [claimMessage, setClaimMessage] = useState("");
   const [claimError, setClaimError] = useState("");
 
-  const nextSunday = useMemo(() => getNextSunday(), []);
-  const nextSundayStr = useMemo(() => toYmd(nextSunday), [nextSunday]);
-
   const isSignedIn = !!userEmail;
 
   const effectiveRole: AppRole | null = isSignedIn
@@ -271,14 +280,18 @@ export default function HomePage() {
     : null;
 
   const canSeeDraftSchedules =
-    effectiveRole === "admin" || effectiveRole === "ministry_leader";
+    effectiveRole === "admin" ||
+    effectiveRole === "ministry_leader";
 
   const canClaim =
     effectiveRole === "volunteer" && !!currentVolunteer;
 
+  const isFirstSunday =
+    selectedSundayStr === toYmd(firstSunday);
+
   /*
    * ---------------------------------------------------------
-   * LOAD AUTHENTICATION AND CURRENT VOLUNTEER
+   * AUTHENTICATION + CURRENT VOLUNTEER
    * ---------------------------------------------------------
    */
 
@@ -301,20 +314,13 @@ export default function HomePage() {
 
         if (!user) {
           setUserEmail(null);
-          setUserId(null);
           setUserRole(null);
           setCurrentVolunteer(null);
-          setBlackout(null);
           setAuthLoaded(true);
           return;
         }
 
         setUserEmail(user.email ?? null);
-        setUserId(user.id);
-
-        /*
-         * Load application role.
-         */
 
         const profileRes = await withTimeout(
           supabase
@@ -332,18 +338,22 @@ export default function HomePage() {
             "Home profile lookup failed:",
             profileRes.error
           );
+
           setUserRole("volunteer");
         } else {
           setUserRole(
-            (profileRes.data?.role as AppRole | null) ?? "volunteer"
+            (profileRes.data?.role as AppRole | null) ??
+              "volunteer"
           );
         }
 
         /*
-         * Load volunteer record using the permanent user_id link.
+         * First try the permanent user_id link.
          */
 
-        const volunteerRes = await withTimeout(
+        let volunteer: CurrentVolunteer | null = null;
+
+        const volunteerByUserRes = await withTimeout(
           supabase
             .from("volunteers")
             .select(
@@ -352,59 +362,57 @@ export default function HomePage() {
             .eq("user_id", user.id)
             .eq("active", true)
             .maybeSingle(),
-          "Home volunteer query"
+          "Home volunteer user lookup"
         );
 
         if (!isMounted) return;
 
-        if (volunteerRes.error) {
+        if (volunteerByUserRes.error) {
           console.error(
-            "Home volunteer lookup failed:",
-            volunteerRes.error
+            "Home volunteer user lookup failed:",
+            volunteerByUserRes.error
           );
-          setCurrentVolunteer(null);
         } else {
-          const volunteer =
-            (volunteerRes.data as CurrentVolunteer | null) ?? null;
+          volunteer =
+            (volunteerByUserRes.data as CurrentVolunteer | null) ??
+            null;
+        }
 
-          setCurrentVolunteer(volunteer);
+        /*
+         * If user_id lookup did not find the volunteer, use email.
+         */
 
-          /*
-           * Check whether this volunteer has marked the upcoming
-           * Sunday unavailable.
-           */
+        if (!volunteer && user.email) {
+          const normalizedEmail =
+            user.email.trim().toLowerCase();
 
-          if (volunteer) {
-            const blackoutRes = await withTimeout(
-              supabase
-                .from("volunteer_blackouts")
-                .select(
-                  "id, volunteer_id, date, note, is_hard"
-                )
-                .eq("volunteer_id", volunteer.id)
-                .eq("date", nextSundayStr)
-                .maybeSingle(),
-              "Home blackout query"
+          const volunteerByEmailRes = await withTimeout(
+            supabase
+              .from("volunteers")
+              .select(
+                "id, user_id, name, public_name, email, active"
+              )
+              .ilike("email", normalizedEmail)
+              .eq("active", true)
+              .maybeSingle(),
+            "Home volunteer email lookup"
+          );
+
+          if (!isMounted) return;
+
+          if (volunteerByEmailRes.error) {
+            console.error(
+              "Home volunteer email lookup failed:",
+              volunteerByEmailRes.error
             );
-
-            if (!isMounted) return;
-
-            if (blackoutRes.error) {
-              console.error(
-                "Home blackout lookup failed:",
-                blackoutRes.error
-              );
-              setBlackout(null);
-            } else {
-              setBlackout(
-                (blackoutRes.data as Blackout | null) ?? null
-              );
-            }
           } else {
-            setBlackout(null);
+            volunteer =
+              (volunteerByEmailRes.data as CurrentVolunteer | null) ??
+              null;
           }
         }
 
+        setCurrentVolunteer(volunteer);
         setAuthLoaded(true);
       } catch (err) {
         if (!isMounted) return;
@@ -418,10 +426,8 @@ export default function HomePage() {
         );
 
         setUserEmail(null);
-        setUserId(null);
         setUserRole(null);
         setCurrentVolunteer(null);
-        setBlackout(null);
         setAuthLoaded(true);
       }
     }
@@ -440,11 +446,11 @@ export default function HomePage() {
       isMounted = false;
       subscription.unsubscribe();
     };
-  }, [supabase, nextSundayStr]);
+  }, [supabase]);
 
   /*
    * ---------------------------------------------------------
-   * LOAD HOME SCHEDULE
+   * LOAD SCHEDULE FOR SELECTED SUNDAY
    * ---------------------------------------------------------
    */
 
@@ -456,6 +462,8 @@ export default function HomePage() {
     async function loadHomeData() {
       setHomeLoading(true);
       setHomeError("");
+      setClaimError("");
+      setClaimMessage("");
 
       try {
         const rolesRes = await withTimeout(
@@ -502,11 +510,11 @@ export default function HomePage() {
           .select(
             "id, date, role_id, volunteer_id, status, published"
           )
-          .eq("date", nextSundayStr);
+          .eq("date", selectedSundayStr);
 
         /*
-         * Volunteers see only published rows.
-         * Admins and ministry leaders may see drafts.
+         * Volunteers only see published schedule rows.
+         * Admins and ministry leaders may see draft rows.
          */
 
         if (!canSeeDraftSchedules) {
@@ -529,6 +537,41 @@ export default function HomePage() {
         setEntries(
           (entriesRes.data as ScheduleEntry[]) ?? []
         );
+
+        /*
+         * Load this volunteer's availability for the selected Sunday.
+         */
+
+        if (currentVolunteer) {
+          const blackoutRes = await withTimeout(
+            supabase
+              .from("volunteer_blackouts")
+              .select(
+                "id, volunteer_id, date, note, is_hard"
+              )
+              .eq("volunteer_id", currentVolunteer.id)
+              .eq("date", selectedSundayStr)
+              .maybeSingle(),
+            "Home blackout query"
+          );
+
+          if (!isMounted) return;
+
+          if (blackoutRes.error) {
+            console.error(
+              "Home blackout lookup failed:",
+              blackoutRes.error
+            );
+
+            setBlackout(null);
+          } else {
+            setBlackout(
+              (blackoutRes.data as Blackout | null) ?? null
+            );
+          }
+        } else {
+          setBlackout(null);
+        }
       } catch (err) {
         if (!isMounted) return;
 
@@ -539,6 +582,8 @@ export default function HomePage() {
             ? err.message
             : "Failed to load home page data."
         );
+
+        setEntries([]);
       } finally {
         if (isMounted) {
           setHomeLoading(false);
@@ -554,7 +599,8 @@ export default function HomePage() {
   }, [
     authLoaded,
     canSeeDraftSchedules,
-    nextSundayStr,
+    currentVolunteer,
+    selectedSundayStr,
     supabase,
   ]);
 
@@ -576,7 +622,7 @@ export default function HomePage() {
 
   /*
    * ---------------------------------------------------------
-   * BUILD HOME SCHEDULE ROWS
+   * BUILD SCHEDULE ROWS
    * ---------------------------------------------------------
    */
 
@@ -603,19 +649,48 @@ export default function HomePage() {
     });
   }, [roles, entries, volunteerMap]);
 
-  const assignedCount = roleRows.filter(
+  const scheduledRows = roleRows.filter(
+    (row) => !!row.entryId
+  );
+
+  const assignedCount = scheduledRows.filter(
     (row) => !!row.volunteerId
   ).length;
 
-  const openCount = roleRows.filter(
+  const openCount = scheduledRows.filter(
     (row) => row.isOpen
   ).length;
 
-  const dashboardItems = getDashboardItems(effectiveRole);
+  const dashboardItems =
+    getDashboardItems(effectiveRole);
 
   /*
    * ---------------------------------------------------------
-   * CLAIM AN OPEN ROLE
+   * SUNDAY NAVIGATION
+   * ---------------------------------------------------------
+   */
+
+  function goPreviousSunday() {
+    if (isFirstSunday) return;
+
+    setSelectedSunday((current) =>
+      addDays(current, -7)
+    );
+  }
+
+  function goNextSunday() {
+    setSelectedSunday((current) =>
+      addDays(current, 7)
+    );
+  }
+
+  function goToUpcomingSunday() {
+    setSelectedSunday(firstSunday);
+  }
+
+  /*
+   * ---------------------------------------------------------
+   * CLAIM OPEN ROLE
    * ---------------------------------------------------------
    */
 
@@ -630,18 +705,12 @@ export default function HomePage() {
       return;
     }
 
-    if (!userId) {
-      setClaimError(
-        "Your signed-in account could not be verified."
-      );
-      return;
-    }
-
     setClaimMessage("");
     setClaimError("");
 
     /*
-     * Hard blackout: do not permit claiming.
+     * Hard blackout means the volunteer has explicitly said
+     * they cannot serve on this date.
      */
 
     if (blackout?.is_hard) {
@@ -654,7 +723,7 @@ export default function HomePage() {
     }
 
     /*
-     * Soft blackout: warn, but allow the volunteer to continue.
+     * Soft blackout gives a warning but still permits claiming.
      */
 
     if (blackout && !blackout.is_hard) {
@@ -662,15 +731,16 @@ export default function HomePage() {
         ? `You marked this date with the note: "${blackout.note}". Do you still want to claim ${roleName}?`
         : `You previously marked this date as unavailable. Do you still want to claim ${roleName}?`;
 
-      const continueClaim = window.confirm(warning);
+      const continueClaim =
+        window.confirm(warning);
 
-      if (!continueClaim) {
-        return;
-      }
+      if (!continueClaim) return;
     }
 
     const confirmed = window.confirm(
-      `Claim ${roleName} for ${prettyDate(nextSunday)}?`
+      `Claim ${roleName} for ${prettyDate(
+        selectedSunday
+      )}?`
     );
 
     if (!confirmed) return;
@@ -679,14 +749,9 @@ export default function HomePage() {
 
     try {
       /*
-       * Only claim the row if:
-       *
-       * - it is the exact schedule entry shown
-       * - it is published
-       * - volunteer_id is still NULL
-       *
-       * This protects against two volunteers attempting to claim
-       * the same role at nearly the same time.
+       * Claim only if the published entry is still open.
+       * This protects against two volunteers claiming the
+       * same role at nearly the same time.
        */
 
       const { data, error } = await supabase
@@ -708,15 +773,12 @@ export default function HomePage() {
 
       if (!data || data.length === 0) {
         throw new Error(
-          "This role is no longer available. Another volunteer may have claimed it first. Please refresh the page."
+          "This position is no longer available. Another volunteer may have claimed it first. Please refresh the page."
         );
       }
 
-      const claimedEntry = data[0] as ScheduleEntry;
-
-      /*
-       * Update the page immediately.
-       */
+      const claimedEntry =
+        data[0] as ScheduleEntry;
 
       setEntries((current) =>
         current.map((entry) =>
@@ -727,9 +789,7 @@ export default function HomePage() {
       );
 
       /*
-       * Make sure the current volunteer is available in the
-       * display-name map even if the earlier public volunteer
-       * query did not return them for some reason.
+       * Ensure the volunteer name can immediately be displayed.
        */
 
       setVolunteers((current) => {
@@ -747,14 +807,15 @@ export default function HomePage() {
           {
             id: currentVolunteer.id,
             name: currentVolunteer.name,
-            public_name: currentVolunteer.public_name,
+            public_name:
+              currentVolunteer.public_name,
           },
         ];
       });
 
       setClaimMessage(
         `You're now scheduled for ${roleName} on ${prettyDate(
-          nextSunday
+          selectedSunday
         )}.`
       );
     } catch (err) {
@@ -763,7 +824,7 @@ export default function HomePage() {
       setClaimError(
         err instanceof Error
           ? err.message
-          : "Could not claim this role."
+          : "Could not claim this position."
       );
     } finally {
       setClaimingEntryId(null);
@@ -784,8 +845,9 @@ export default function HomePage() {
             </h1>
 
             <p className="mt-4 max-w-2xl text-lg text-gray-700">
-              View the upcoming service schedule and access the
-              tools available for your role.
+              View upcoming service schedules, claim open
+              positions, and access the tools available for your
+              role.
             </p>
 
             {authError ? (
@@ -814,7 +876,8 @@ export default function HomePage() {
               </div>
             ) : (
               <div className="mt-5 rounded-lg bg-stone-100 px-4 py-3 text-sm text-stone-700">
-                Viewing as guest. Sign in to see your dashboard.
+                Viewing as guest. Sign in to see your
+                dashboard.
               </div>
             )}
           </div>
@@ -843,29 +906,66 @@ export default function HomePage() {
         ) : (
           <div className="space-y-8">
             <section className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-stone-200">
+              {/*
+               * Sunday navigation
+               */}
+              <div className="mb-6 flex flex-col gap-3 border-b border-stone-200 pb-5 sm:flex-row sm:items-center sm:justify-between">
+                <button
+                  type="button"
+                  onClick={goPreviousSunday}
+                  disabled={isFirstSunday}
+                  className="rounded-lg border border-stone-300 bg-white px-4 py-2 text-sm font-medium text-gray-800 shadow-sm hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  ← Previous Sunday
+                </button>
+
+                {!isFirstSunday ? (
+                  <button
+                    type="button"
+                    onClick={goToUpcomingSunday}
+                    className="text-sm font-medium text-emerald-700 hover:text-emerald-800"
+                  >
+                    Return to upcoming Sunday
+                  </button>
+                ) : (
+                  <span className="text-sm font-medium text-stone-500">
+                    Upcoming Sunday
+                  </span>
+                )}
+
+                <button
+                  type="button"
+                  onClick={goNextSunday}
+                  className="rounded-lg border border-stone-300 bg-white px-4 py-2 text-sm font-medium text-gray-800 shadow-sm hover:bg-stone-50"
+                >
+                  Next Sunday →
+                </button>
+              </div>
+
               <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                 <div>
                   <h2 className="text-2xl font-semibold text-gray-900">
-                    {prettyDate(nextSunday)} Schedule
+                    {prettyDate(selectedSunday)} Schedule
                   </h2>
 
                   <p className="mt-2 text-sm text-gray-600">
-                    This is the current schedule for the upcoming
-                    Sunday.
+                    {isFirstSunday
+                      ? "This is the schedule for the upcoming Sunday."
+                      : "You are viewing a future Sunday."}
                   </p>
 
                   {canClaim ? (
                     <p className="mt-2 text-sm text-gray-600">
-                      Open positions may be claimed directly from
-                      this schedule.
+                      Open positions may be claimed directly
+                      from this schedule.
                     </p>
                   ) : null}
                 </div>
 
                 <div className="rounded-xl bg-stone-100 px-4 py-3 text-sm text-gray-700">
                   <div className="font-medium">
-                    {assignedCount} of {roleRows.length} roles
-                    filled
+                    {assignedCount} of{" "}
+                    {scheduledRows.length} roles filled
                   </div>
 
                   <div className="mt-1 text-gray-600">
@@ -896,13 +996,19 @@ export default function HomePage() {
                 <div className="mt-6 text-sm text-gray-600">
                   Loading schedule...
                 </div>
-              ) : roleRows.length === 0 ? (
-                <div className="mt-6 rounded-xl border border-stone-200 bg-stone-50 p-5 text-sm text-gray-700">
-                  No schedule rows found for this Sunday yet.
+              ) : entries.length === 0 ? (
+                <div className="mt-6 rounded-xl border border-stone-200 bg-stone-50 p-5">
+                  <p className="font-medium text-gray-900">
+                    No schedule published for this Sunday yet.
+                  </p>
+
+                  <p className="mt-1 text-sm text-gray-600">
+                    Try another Sunday using the buttons above.
+                  </p>
                 </div>
               ) : (
                 <div className="mt-6 grid gap-3 md:grid-cols-2">
-                  {roleRows.map((row) => {
+                  {scheduledRows.map((row) => {
                     const isClaiming =
                       claimingEntryId === row.entryId;
 
