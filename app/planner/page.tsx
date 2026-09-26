@@ -39,6 +39,7 @@ type ScheduleEntry = {
   volunteer_id: string | null;
   status: string | null;
   published: boolean;
+  template_id: string | null;
 };
 
 type VolunteerBlackout = {
@@ -226,7 +227,9 @@ export default function PlannerPage() {
 
       const { data: entriesData, error: entriesError } = await supabase
         .from("schedule_entries")
-        .select("id, date, role_id, volunteer_id, status, published")
+        .select(
+          "id, date, role_id, volunteer_id, status, published, template_id"
+        )
         .in("date", plannerDates);
 
       if (entriesError) {
@@ -324,7 +327,6 @@ export default function PlannerPage() {
     }
 
     const published = dateEntries.filter((entry) => entry.published).length;
-
     const assigned = dateEntries.filter((entry) => entry.volunteer_id).length;
 
     return {
@@ -390,14 +392,6 @@ export default function PlannerPage() {
         ? `You are scheduled for ${roleName} on ${serviceDate}.`
         : `You are no longer scheduled for ${roleName} on ${serviceDate}.`;
 
-    /*
-     * In-app notification and email are deliberately independent.
-     *
-     * A volunteer needs a linked user_id for an in-app notification,
-     * but they can still receive email even if they do not yet have
-     * a linked Call Sheet account.
-     */
-
     if (volunteer.user_id) {
       const { error: notificationError } = await supabase
         .from("notifications")
@@ -444,15 +438,6 @@ export default function PlannerPage() {
     oldVolunteerId: string | null;
     newVolunteerId: string | null;
   }) {
-    /*
-     * Determine exactly what happened.
-     *
-     * null -> volunteer = assignment
-     * volunteer -> null = removal
-     * volunteer A -> volunteer B = removal + assignment
-     * same volunteer -> same volunteer = nothing
-     */
-
     const isNewAssignment =
       !oldVolunteerId && Boolean(newVolunteerId);
 
@@ -493,13 +478,6 @@ export default function PlannerPage() {
   }
 
   async function sendPublishNotifications(date: string) {
-    /*
-     * Publishing converts all existing draft assignments
-     * for this service into official assignments.
-     *
-     * Notify only volunteers who are actually assigned.
-     */
-
     const dateEntries = getDateEntries(date).filter(
       (entry) => entry.volunteer_id
     );
@@ -573,6 +551,7 @@ export default function PlannerPage() {
           volunteer_id: null,
           status: null,
           published: false,
+          template_id: selectedTemplateId,
         }));
 
       if (rowsToInsert.length === 0) {
@@ -588,7 +567,9 @@ export default function PlannerPage() {
       const { data: insertedData, error: insertError } = await supabase
         .from("schedule_entries")
         .insert(rowsToInsert)
-        .select("id, date, role_id, volunteer_id, status, published");
+        .select(
+          "id, date, role_id, volunteer_id, status, published, template_id"
+        );
 
       if (insertError) {
         throw new Error(
@@ -638,20 +619,6 @@ export default function PlannerPage() {
     const previousEntries = [...entries];
 
     try {
-      /*
-       * Publishing is the boundary between a working draft
-       * and an official volunteer schedule.
-       *
-       * Publishing:
-       * - marks every row for the date as published
-       * - makes the schedule visible
-       * - sends assignment notifications
-       *
-       * Unpublishing:
-       * - returns the schedule to draft
-       * - sends NO removal/cancellation notifications
-       */
-
       const { error: updateError } = await supabase
         .from("schedule_entries")
         .update({
@@ -740,18 +707,9 @@ export default function PlannerPage() {
 
     const previousVolunteerId = entry.volunteer_id;
 
-    /*
-     * Do absolutely nothing if the assignment did not
-     * actually change.
-     */
-
     if (previousVolunteerId === normalizedVolunteerId) {
       return;
     }
-
-    /*
-     * Check availability before saving.
-     */
 
     const blackout = findBlackout(normalizedVolunteerId, date);
 
@@ -787,29 +745,11 @@ export default function PlannerPage() {
     const cellKey = `${roleId}-${date}`;
     const previousEntries = [...entries];
 
-    /*
-     * IMPORTANT:
-     *
-     * Capture publication status BEFORE changing the
-     * assignment.
-     *
-     * Draft schedule:
-     * Save silently.
-     *
-     * Published schedule:
-     * Save, then notify only the people affected by
-     * this particular change.
-     */
-
     const dateWasPublished = getDatePublishState(date).isPublished;
 
     setSavingCell(cellKey);
     setError("");
     setSuccessMessage("");
-
-    /*
-     * Optimistic UI update.
-     */
 
     setEntries((current) =>
       current.map((item) =>
@@ -837,13 +777,6 @@ export default function PlannerPage() {
           `Could not save assignment: ${updateError.message}`
         );
       }
-
-      /*
-       * Draft assignment changes are deliberately silent.
-       *
-       * Once the Sunday is published, however, the
-       * affected volunteer(s) need to know immediately.
-       */
 
       if (dateWasPublished) {
         try {
@@ -908,11 +841,6 @@ export default function PlannerPage() {
       }
     } catch (err) {
       console.error("Assignment save error:", err);
-
-      /*
-       * Database save failed, so restore the UI to the
-       * previous state.
-       */
 
       setEntries(previousEntries);
 
