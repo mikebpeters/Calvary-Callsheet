@@ -141,12 +141,20 @@ export default function PlannerPage() {
   const [error, setError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
 
-  const plannerDates = useMemo(() => {
+  /*
+   * The planner represents 12 weeks beginning with startDate.
+   *
+   * IMPORTANT:
+   * We load the ENTIRE date range, not just Sundays.
+   * This allows Saturday services, weekday services, special events, etc.
+   */
+  const plannerRange = useMemo(() => {
     const first = new Date(`${startDate}T12:00:00`);
 
-    return [0, 7, 14, 21, 28, 35, 42, 49, 56, 63, 70, 77].map((days) =>
-      toYmd(addDays(first, days))
-    );
+    return {
+      start: toYmd(first),
+      end: toYmd(addDays(first, 83)),
+    };
   }, [startDate]);
 
   useEffect(() => {
@@ -245,12 +253,19 @@ export default function PlannerPage() {
 
       setTemplateRoles((templateRolesData ?? []) as ServiceTemplateRole[]);
 
+      /*
+       * Load EVERY schedule entry in the 12-week window.
+       *
+       * This replaces the old .in("date", plannerDates) approach,
+       * which only loaded Sundays.
+       */
       const { data: entriesData, error: entriesError } = await supabase
         .from("schedule_entries")
         .select(
           "id, date, role_id, volunteer_id, status, published, template_id"
         )
-        .in("date", plannerDates);
+        .gte("date", plannerRange.start)
+        .lte("date", plannerRange.end);
 
       if (entriesError) {
         throw new Error(`Schedule query failed: ${entriesError.message}`);
@@ -258,10 +273,15 @@ export default function PlannerPage() {
 
       setEntries((entriesData ?? []) as ScheduleEntry[]);
 
+      /*
+       * Blackouts also need to cover the whole date range,
+       * not just Sundays.
+       */
       const { data: blackoutData, error: blackoutError } = await supabase
         .from("volunteer_blackouts")
         .select("id, volunteer_id, date, note, is_hard")
-        .in("date", plannerDates);
+        .gte("date", plannerRange.start)
+        .lte("date", plannerRange.end);
 
       if (blackoutError) {
         throw new Error(`Blackout query failed: ${blackoutError.message}`);
@@ -313,8 +333,7 @@ export default function PlannerPage() {
   function getServiceEntries(date: string, templateId: string | null) {
     return entries.filter(
       (entry) =>
-        entry.date === date &&
-        (entry.template_id ?? null) === templateId
+        entry.date === date && (entry.template_id ?? null) === templateId
     );
   }
 
@@ -492,11 +511,9 @@ export default function PlannerPage() {
     oldVolunteerId: string | null;
     newVolunteerId: string | null;
   }) {
-    const isNewAssignment =
-      !oldVolunteerId && Boolean(newVolunteerId);
+    const isNewAssignment = !oldVolunteerId && Boolean(newVolunteerId);
 
-    const isRemoval =
-      Boolean(oldVolunteerId) && !newVolunteerId;
+    const isRemoval = Boolean(oldVolunteerId) && !newVolunteerId;
 
     const isChange =
       Boolean(oldVolunteerId) &&
@@ -585,14 +602,11 @@ export default function PlannerPage() {
       }
 
       /*
-       * IMPORTANT:
-       *
        * Existing rows are checked by DATE + TEMPLATE.
        *
-       * This means two different services can use the same role
-       * on the same date without being mistaken for each other.
+       * Therefore two services on the same day may both contain
+       * the same role without conflicting with one another.
        */
-
       const { data: existingData, error: existingError } = await supabase
         .from("schedule_entries")
         .select(
@@ -650,7 +664,16 @@ export default function PlannerPage() {
 
       const insertedRows = (insertedData ?? []) as ScheduleEntry[];
 
-      if (plannerDates.includes(templateDate)) {
+      /*
+       * Add the new service immediately if its date falls anywhere
+       * inside the planner's complete date range.
+       *
+       * It does NOT have to be a Sunday.
+       */
+      if (
+        templateDate >= plannerRange.start &&
+        templateDate <= plannerRange.end
+      ) {
         setEntries((current) => [...current, ...insertedRows]);
       }
 
@@ -702,10 +725,6 @@ export default function PlannerPage() {
         })
         .eq("date", date);
 
-      /*
-       * NULL needs a different Supabase filter from a UUID.
-       */
-
       if (templateId) {
         query = query.eq("template_id", templateId);
       } else {
@@ -749,10 +768,7 @@ export default function PlannerPage() {
             )} published. Assigned volunteers have been notified.`
           );
         } catch (notificationErr) {
-          console.error(
-            "Publish notification error:",
-            notificationErr
-          );
+          console.error("Publish notification error:", notificationErr);
 
           setError(
             notificationErr instanceof Error
@@ -821,9 +837,7 @@ export default function PlannerPage() {
         return;
       }
 
-      const note = blackout.note
-        ? `\n\nNote: ${blackout.note}`
-        : "";
+      const note = blackout.note ? `\n\nNote: ${blackout.note}` : "";
 
       const shouldContinue = window.confirm(
         `${volunteerName} is marked unavailable for ${shortDate(
@@ -840,10 +854,9 @@ export default function PlannerPage() {
     const previousEntries = [...entries];
 
     /*
-     * Publication is checked for THIS SERVICE,
-     * not everything on the date.
+     * Publication state belongs to this specific service:
+     * DATE + TEMPLATE.
      */
-
     const serviceWasPublished = getServicePublishState(
       date,
       entry.template_id
@@ -923,10 +936,7 @@ export default function PlannerPage() {
             );
           }
         } catch (notificationErr) {
-          console.error(
-            "Assignment notification error:",
-            notificationErr
-          );
+          console.error("Assignment notification error:", notificationErr);
 
           setError(
             notificationErr instanceof Error
@@ -957,14 +967,20 @@ export default function PlannerPage() {
   }
 
   /*
-   * Build actual service instances.
+   * Build service instances from the schedule rows.
    *
-   * A service is DATE + TEMPLATE.
+   * One service = DATE + TEMPLATE.
    *
-   * Legacy rows with no template_id are grouped together
-   * as a legacy schedule for that date.
+   * Therefore:
+   *
+   * Sunday Worship, Nov 29
+   * and
+   * Men's Breakfast, Nov 28
+   *
+   * are completely independent services.
+   *
+   * Old rows without template_id remain grouped as Legacy Schedule.
    */
-
   const serviceInstances = useMemo<ServiceInstance[]>(() => {
     const map = new Map<string, ServiceInstance>();
 
@@ -1073,7 +1089,7 @@ export default function PlannerPage() {
 
             <div className="flex flex-col gap-2">
               <label className="text-sm font-medium text-gray-700">
-                Starting Sunday
+                Starting Date
               </label>
 
               <input
@@ -1106,7 +1122,7 @@ export default function PlannerPage() {
               </h2>
 
               <p className="mt-1 max-w-3xl text-sm text-gray-600">
-                Choose a service date and template. The roles from that
+                Choose any service date and a template. The roles from that
                 template will be created as a separate draft service.
               </p>
 
@@ -1207,7 +1223,7 @@ export default function PlannerPage() {
             <p className="mt-1 text-sm text-gray-600">
               Draft services can be edited without notifying volunteers.
               Publishing makes that service official and sends assignment
-              notifications. Different services on the same date are handled
+              notifications. Different services and dates are handled
               independently.
             </p>
 
