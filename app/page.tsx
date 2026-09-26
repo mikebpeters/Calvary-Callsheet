@@ -14,8 +14,19 @@ type Role = {
 
 type Volunteer = {
   id: string;
+  user_id?: string | null;
   name: string;
   public_name: string | null;
+  email?: string | null;
+};
+
+type CurrentVolunteer = {
+  id: string;
+  user_id: string | null;
+  name: string;
+  public_name: string | null;
+  email: string | null;
+  active: boolean;
 };
 
 type ScheduleEntry = {
@@ -25,6 +36,14 @@ type ScheduleEntry = {
   volunteer_id: string | null;
   status: string | null;
   published: boolean;
+};
+
+type Blackout = {
+  id: string;
+  volunteer_id: string;
+  date: string;
+  note: string | null;
+  is_hard: boolean;
 };
 
 type DashboardItem = {
@@ -100,24 +119,28 @@ function getRoleIcon(roleName: string) {
   if (key.includes("sound") || key.includes("audio")) return "🎚️";
   if (key.includes("projection") || key.includes("slides")) return "📽️";
   if (key.includes("livestream") || key.includes("stream")) return "📡";
+
   if (
     key.includes("host") ||
     key.includes("greeter") ||
     key.includes("welcome")
   )
     return "👋";
+
   if (
     key.includes("kids") ||
     key.includes("children") ||
     key.includes("nursery")
   )
     return "👶";
+
   if (
     key.includes("coffee") ||
     key.includes("cafe") ||
     key.includes("hospitality")
   )
     return "☕";
+
   if (key.includes("prayer")) return "🙏";
   if (key.includes("security")) return "🛡️";
   if (key.includes("setup")) return "🪑";
@@ -225,17 +248,39 @@ export default function HomePage() {
 
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [userRole, setUserRole] = useState<AppRole | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+
+  const [currentVolunteer, setCurrentVolunteer] =
+    useState<CurrentVolunteer | null>(null);
+
+  const [blackout, setBlackout] = useState<Blackout | null>(null);
+
+  const [claimingEntryId, setClaimingEntryId] =
+    useState<string | null>(null);
+
+  const [claimMessage, setClaimMessage] = useState("");
+  const [claimError, setClaimError] = useState("");
 
   const nextSunday = useMemo(() => getNextSunday(), []);
   const nextSundayStr = useMemo(() => toYmd(nextSunday), [nextSunday]);
 
   const isSignedIn = !!userEmail;
+
   const effectiveRole: AppRole | null = isSignedIn
     ? userRole ?? "volunteer"
     : null;
 
   const canSeeDraftSchedules =
     effectiveRole === "admin" || effectiveRole === "ministry_leader";
+
+  const canClaim =
+    effectiveRole === "volunteer" && !!currentVolunteer;
+
+  /*
+   * ---------------------------------------------------------
+   * LOAD AUTHENTICATION AND CURRENT VOLUNTEER
+   * ---------------------------------------------------------
+   */
 
   useEffect(() => {
     let isMounted = true;
@@ -256,12 +301,20 @@ export default function HomePage() {
 
         if (!user) {
           setUserEmail(null);
+          setUserId(null);
           setUserRole(null);
+          setCurrentVolunteer(null);
+          setBlackout(null);
           setAuthLoaded(true);
           return;
         }
 
         setUserEmail(user.email ?? null);
+        setUserId(user.id);
+
+        /*
+         * Load application role.
+         */
 
         const profileRes = await withTimeout(
           supabase
@@ -275,12 +328,81 @@ export default function HomePage() {
         if (!isMounted) return;
 
         if (profileRes.error) {
-          console.error("Home profile lookup failed:", profileRes.error);
+          console.error(
+            "Home profile lookup failed:",
+            profileRes.error
+          );
           setUserRole("volunteer");
         } else {
           setUserRole(
             (profileRes.data?.role as AppRole | null) ?? "volunteer"
           );
+        }
+
+        /*
+         * Load volunteer record using the permanent user_id link.
+         */
+
+        const volunteerRes = await withTimeout(
+          supabase
+            .from("volunteers")
+            .select(
+              "id, user_id, name, public_name, email, active"
+            )
+            .eq("user_id", user.id)
+            .eq("active", true)
+            .maybeSingle(),
+          "Home volunteer query"
+        );
+
+        if (!isMounted) return;
+
+        if (volunteerRes.error) {
+          console.error(
+            "Home volunteer lookup failed:",
+            volunteerRes.error
+          );
+          setCurrentVolunteer(null);
+        } else {
+          const volunteer =
+            (volunteerRes.data as CurrentVolunteer | null) ?? null;
+
+          setCurrentVolunteer(volunteer);
+
+          /*
+           * Check whether this volunteer has marked the upcoming
+           * Sunday unavailable.
+           */
+
+          if (volunteer) {
+            const blackoutRes = await withTimeout(
+              supabase
+                .from("volunteer_blackouts")
+                .select(
+                  "id, volunteer_id, date, note, is_hard"
+                )
+                .eq("volunteer_id", volunteer.id)
+                .eq("date", nextSundayStr)
+                .maybeSingle(),
+              "Home blackout query"
+            );
+
+            if (!isMounted) return;
+
+            if (blackoutRes.error) {
+              console.error(
+                "Home blackout lookup failed:",
+                blackoutRes.error
+              );
+              setBlackout(null);
+            } else {
+              setBlackout(
+                (blackoutRes.data as Blackout | null) ?? null
+              );
+            }
+          } else {
+            setBlackout(null);
+          }
         }
 
         setAuthLoaded(true);
@@ -296,7 +418,10 @@ export default function HomePage() {
         );
 
         setUserEmail(null);
+        setUserId(null);
         setUserRole(null);
+        setCurrentVolunteer(null);
+        setBlackout(null);
         setAuthLoaded(true);
       }
     }
@@ -315,7 +440,13 @@ export default function HomePage() {
       isMounted = false;
       subscription.unsubscribe();
     };
-  }, [supabase]);
+  }, [supabase, nextSundayStr]);
+
+  /*
+   * ---------------------------------------------------------
+   * LOAD HOME SCHEDULE
+   * ---------------------------------------------------------
+   */
 
   useEffect(() => {
     if (!authLoaded) return;
@@ -362,7 +493,9 @@ export default function HomePage() {
           );
         }
 
-        setVolunteers((volunteersRes.data as Volunteer[]) ?? []);
+        setVolunteers(
+          (volunteersRes.data as Volunteer[]) ?? []
+        );
 
         let entriesQuery = supabase
           .from("schedule_entries")
@@ -370,6 +503,11 @@ export default function HomePage() {
             "id, date, role_id, volunteer_id, status, published"
           )
           .eq("date", nextSundayStr);
+
+        /*
+         * Volunteers see only published rows.
+         * Admins and ministry leaders may see drafts.
+         */
 
         if (!canSeeDraftSchedules) {
           entriesQuery = entriesQuery.eq("published", true);
@@ -388,7 +526,9 @@ export default function HomePage() {
           );
         }
 
-        setEntries((entriesRes.data as ScheduleEntry[]) ?? []);
+        setEntries(
+          (entriesRes.data as ScheduleEntry[]) ?? []
+        );
       } catch (err) {
         if (!isMounted) return;
 
@@ -419,20 +559,26 @@ export default function HomePage() {
   ]);
 
   /*
-   * Display the deliberately configured public name when one exists.
-   * Otherwise use the volunteer's actual name.
-   *
-   * We deliberately do not derive a person's display name from
-   * their email address.
+   * ---------------------------------------------------------
+   * VOLUNTEER DISPLAY NAMES
+   * ---------------------------------------------------------
    */
+
   const volunteerMap = useMemo(() => {
     return new Map(
       volunteers.map((volunteer) => [
         volunteer.id,
-        volunteer.public_name?.trim() || volunteer.name.trim(),
+        volunteer.public_name?.trim() ||
+          volunteer.name.trim(),
       ])
     );
   }, [volunteers]);
+
+  /*
+   * ---------------------------------------------------------
+   * BUILD HOME SCHEDULE ROWS
+   * ---------------------------------------------------------
+   */
 
   const roleRows = useMemo(() => {
     return roles.map((role) => {
@@ -448,14 +594,17 @@ export default function HomePage() {
         roleId: role.id,
         roleName: role.name,
         icon: getRoleIcon(role.name),
+        entryId: entry?.id ?? null,
+        published: entry?.published ?? false,
+        volunteerId: entry?.volunteer_id ?? null,
         assignedName: displayAssignedName,
-        isOpen: !displayAssignedName,
+        isOpen: !!entry && !entry.volunteer_id,
       };
     });
   }, [roles, entries, volunteerMap]);
 
   const assignedCount = roleRows.filter(
-    (row) => !row.isOpen
+    (row) => !!row.volunteerId
   ).length;
 
   const openCount = roleRows.filter(
@@ -463,6 +612,163 @@ export default function HomePage() {
   ).length;
 
   const dashboardItems = getDashboardItems(effectiveRole);
+
+  /*
+   * ---------------------------------------------------------
+   * CLAIM AN OPEN ROLE
+   * ---------------------------------------------------------
+   */
+
+  async function claimRole(
+    entryId: string,
+    roleName: string
+  ) {
+    if (!currentVolunteer) {
+      setClaimError(
+        "Your account is not linked to an active volunteer profile."
+      );
+      return;
+    }
+
+    if (!userId) {
+      setClaimError(
+        "Your signed-in account could not be verified."
+      );
+      return;
+    }
+
+    setClaimMessage("");
+    setClaimError("");
+
+    /*
+     * Hard blackout: do not permit claiming.
+     */
+
+    if (blackout?.is_hard) {
+      setClaimError(
+        blackout.note
+          ? `You marked this Sunday unavailable: ${blackout.note}`
+          : "You marked this Sunday unavailable, so this role cannot be claimed."
+      );
+      return;
+    }
+
+    /*
+     * Soft blackout: warn, but allow the volunteer to continue.
+     */
+
+    if (blackout && !blackout.is_hard) {
+      const warning = blackout.note
+        ? `You marked this date with the note: "${blackout.note}". Do you still want to claim ${roleName}?`
+        : `You previously marked this date as unavailable. Do you still want to claim ${roleName}?`;
+
+      const continueClaim = window.confirm(warning);
+
+      if (!continueClaim) {
+        return;
+      }
+    }
+
+    const confirmed = window.confirm(
+      `Claim ${roleName} for ${prettyDate(nextSunday)}?`
+    );
+
+    if (!confirmed) return;
+
+    setClaimingEntryId(entryId);
+
+    try {
+      /*
+       * Only claim the row if:
+       *
+       * - it is the exact schedule entry shown
+       * - it is published
+       * - volunteer_id is still NULL
+       *
+       * This protects against two volunteers attempting to claim
+       * the same role at nearly the same time.
+       */
+
+      const { data, error } = await supabase
+        .from("schedule_entries")
+        .update({
+          volunteer_id: currentVolunteer.id,
+          status: "assigned",
+        })
+        .eq("id", entryId)
+        .eq("published", true)
+        .is("volunteer_id", null)
+        .select(
+          "id, date, role_id, volunteer_id, status, published"
+        );
+
+      if (error) {
+        throw new Error(error.message);
+      }
+
+      if (!data || data.length === 0) {
+        throw new Error(
+          "This role is no longer available. Another volunteer may have claimed it first. Please refresh the page."
+        );
+      }
+
+      const claimedEntry = data[0] as ScheduleEntry;
+
+      /*
+       * Update the page immediately.
+       */
+
+      setEntries((current) =>
+        current.map((entry) =>
+          entry.id === claimedEntry.id
+            ? claimedEntry
+            : entry
+        )
+      );
+
+      /*
+       * Make sure the current volunteer is available in the
+       * display-name map even if the earlier public volunteer
+       * query did not return them for some reason.
+       */
+
+      setVolunteers((current) => {
+        if (
+          current.some(
+            (volunteer) =>
+              volunteer.id === currentVolunteer.id
+          )
+        ) {
+          return current;
+        }
+
+        return [
+          ...current,
+          {
+            id: currentVolunteer.id,
+            name: currentVolunteer.name,
+            public_name: currentVolunteer.public_name,
+          },
+        ];
+      });
+
+      setClaimMessage(
+        `You're now scheduled for ${roleName} on ${prettyDate(
+          nextSunday
+        )}.`
+      );
+    } catch (err) {
+      console.error("Claim role error:", err);
+
+      setClaimError(
+        err instanceof Error
+          ? err.message
+          : "Could not claim this role."
+      );
+    } finally {
+      setClaimingEntryId(null);
+    }
+  }
 
   return (
     <main className="min-h-screen bg-stone-50">
@@ -478,8 +784,8 @@ export default function HomePage() {
             </h1>
 
             <p className="mt-4 max-w-2xl text-lg text-gray-700">
-              View the upcoming service schedule and access the tools
-              available for your role.
+              View the upcoming service schedule and access the
+              tools available for your role.
             </p>
 
             {authError ? (
@@ -523,8 +829,8 @@ export default function HomePage() {
             </h2>
 
             <p className="mt-2 text-sm text-gray-700">
-              Sign in to view the schedule, availability tools, and
-              role-specific actions.
+              Sign in to view the schedule, availability tools,
+              and role-specific actions.
             </p>
 
             <Link
@@ -544,13 +850,22 @@ export default function HomePage() {
                   </h2>
 
                   <p className="mt-2 text-sm text-gray-600">
-                    This is the current schedule for the upcoming Sunday.
+                    This is the current schedule for the upcoming
+                    Sunday.
                   </p>
+
+                  {canClaim ? (
+                    <p className="mt-2 text-sm text-gray-600">
+                      Open positions may be claimed directly from
+                      this schedule.
+                    </p>
+                  ) : null}
                 </div>
 
                 <div className="rounded-xl bg-stone-100 px-4 py-3 text-sm text-gray-700">
                   <div className="font-medium">
-                    {assignedCount} of {roleRows.length} roles filled
+                    {assignedCount} of {roleRows.length} roles
+                    filled
                   </div>
 
                   <div className="mt-1 text-gray-600">
@@ -565,6 +880,18 @@ export default function HomePage() {
                 </div>
               ) : null}
 
+              {claimError ? (
+                <div className="mt-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {claimError}
+                </div>
+              ) : null}
+
+              {claimMessage ? (
+                <div className="mt-5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
+                  {claimMessage}
+                </div>
+              ) : null}
+
               {homeLoading ? (
                 <div className="mt-6 text-sm text-gray-600">
                   Loading schedule...
@@ -575,44 +902,73 @@ export default function HomePage() {
                 </div>
               ) : (
                 <div className="mt-6 grid gap-3 md:grid-cols-2">
-                  {roleRows.map((row) => (
-                    <div
-                      key={row.roleId}
-                      className="flex items-center justify-between gap-4 rounded-xl border border-stone-200 px-4 py-3"
-                    >
-                      <div className="flex min-w-0 items-center gap-3">
-                        <span
-                          className="text-xl"
-                          aria-hidden="true"
-                        >
-                          {row.icon}
-                        </span>
+                  {roleRows.map((row) => {
+                    const isClaiming =
+                      claimingEntryId === row.entryId;
 
-                        <span className="truncate font-medium text-gray-900">
-                          {row.roleName}
-                        </span>
-                      </div>
+                    const showClaimButton =
+                      canClaim &&
+                      row.isOpen &&
+                      row.published &&
+                      !!row.entryId;
 
+                    return (
                       <div
-                        className={`shrink-0 text-sm font-medium ${
-                          row.isOpen
-                            ? "text-amber-700"
-                            : "text-emerald-700"
-                        }`}
+                        key={row.roleId}
+                        className="flex items-center justify-between gap-4 rounded-xl border border-stone-200 px-4 py-3"
                       >
-                        {row.isOpen
-                          ? "Open"
-                          : row.assignedName}
+                        <div className="flex min-w-0 items-center gap-3">
+                          <span
+                            className="text-xl"
+                            aria-hidden="true"
+                          >
+                            {row.icon}
+                          </span>
+
+                          <span className="truncate font-medium text-gray-900">
+                            {row.roleName}
+                          </span>
+                        </div>
+
+                        {showClaimButton ? (
+                          <button
+                            type="button"
+                            disabled={isClaiming}
+                            onClick={() =>
+                              claimRole(
+                                row.entryId!,
+                                row.roleName
+                              )
+                            }
+                            className="shrink-0 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isClaiming
+                              ? "Claiming..."
+                              : "Claim"}
+                          </button>
+                        ) : (
+                          <div
+                            className={`shrink-0 text-sm font-medium ${
+                              row.isOpen
+                                ? "text-amber-700"
+                                : "text-emerald-700"
+                            }`}
+                          >
+                            {row.isOpen
+                              ? "Open"
+                              : row.assignedName}
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 
               {canSeeDraftSchedules ? (
                 <div className="mt-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                  Admin view: draft and published schedule rows may be
-                  visible here.
+                  Admin view: draft and published schedule rows
+                  may be visible here.
                 </div>
               ) : null}
             </section>
@@ -624,8 +980,8 @@ export default function HomePage() {
                 </h2>
 
                 <p className="mt-1 text-sm text-gray-600">
-                  These are the most relevant tools for your current
-                  access level.
+                  These are the most relevant tools for your
+                  current access level.
                 </p>
               </div>
 
