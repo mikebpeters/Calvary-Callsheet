@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation";
 export default function LoginPage() {
   const supabase = useMemo(() => createClient(), []);
   const router = useRouter();
-  
+
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [checkingSession, setCheckingSession] = useState(true);
@@ -71,12 +71,28 @@ export default function LoginPage() {
     });
 
     if (signInError) {
-      setError(signInError.message);
+      const lowerMessage = signInError.message.toLowerCase();
+
+      if (
+        lowerMessage.includes("security purposes") ||
+        lowerMessage.includes("rate limit") ||
+        lowerMessage.includes("seconds")
+      ) {
+        setError(
+          "A sign-in email was recently requested. Please wait a few seconds before requesting another."
+        );
+      } else {
+        setError(signInError.message);
+      }
+
       setLoading(false);
       return;
     }
 
-    setMessage("Check your email for the sign-in link.");
+    setMessage(
+      `We've sent a magic sign-in link to ${trimmedEmail}. Open the email and click the link to sign in. If you don't see it within a minute or two, check your junk or spam folder.`
+    );
+
     setLoading(false);
   }
 
@@ -100,11 +116,20 @@ export default function LoginPage() {
       <div className="mx-auto flex max-w-5xl justify-center px-6 py-16">
         <div className="w-full max-w-md rounded-2xl border border-stone-200 bg-white p-8 shadow-sm">
           <h1 className="text-3xl font-semibold text-stone-900">Sign In</h1>
-          <p className="mt-4 text-sm text-stone-600">
-            Enter your email to receive a sign-in link.
+
+          <p className="mt-4 text-sm leading-6 text-stone-600">
+            Enter your email and we'll send you a secure sign-in link.
+            The email will contain a <strong>magic link</strong> that signs
+            you directly into Calvary Call Sheet.
           </p>
 
-          <form onSubmit={handleSubmit} className="mt-8 space-y-4">
+          <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm leading-5 text-blue-900">
+            <strong>Watch for an email from Calvary Call Sheet.</strong>{" "}
+            It is a legitimate sign-in email, not spam. If you don't see it
+            within a minute or two, check your junk or spam folder.
+          </div>
+
+          <form onSubmit={handleSubmit} className="mt-6 space-y-4">
             <div>
               <label
                 htmlFor="email"
@@ -112,6 +137,7 @@ export default function LoginPage() {
               >
                 Email address
               </label>
+
               <input
                 id="email"
                 type="email"
@@ -132,13 +158,14 @@ export default function LoginPage() {
           </form>
 
           {message ? (
-            <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-              {message}
+            <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm leading-5 text-emerald-800">
+              <strong>Check your email.</strong>
+              <div className="mt-1">{message}</div>
             </div>
           ) : null}
 
           {error ? (
-            <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-5 text-amber-900">
               {error}
             </div>
           ) : null}
