@@ -169,9 +169,9 @@ export default function PlannerPage() {
   >([]);
 
   /*
-   * These entries are used only to calculate
-   * how many distinct services each volunteer
-   * is serving during a calendar month.
+   * Used to calculate how many distinct
+   * services each volunteer is serving
+   * during a calendar month.
    */
   const [
     workloadEntries,
@@ -203,11 +203,17 @@ export default function PlannerPage() {
   ] = useState<string | null>(null);
 
   const [
+    deletingService,
+    setDeletingService,
+  ] = useState<string | null>(null);
+
+  const [
     creatingFromTemplate,
     setCreatingFromTemplate,
   ] = useState(false);
 
   const [error, setError] = useState("");
+
   const [
     successMessage,
     setSuccessMessage,
@@ -217,11 +223,6 @@ export default function PlannerPage() {
    * ---------------------------------------------------------
    * PLANNER RANGE
    * ---------------------------------------------------------
-   *
-   * The visible planner covers 12 weeks.
-   *
-   * We load ALL dates in that range so Saturday,
-   * weekday and special services work as well.
    */
 
   const plannerRange = useMemo(() => {
@@ -236,8 +237,7 @@ export default function PlannerPage() {
   }, [startDate]);
 
   /*
-   * Workload counts need complete calendar months,
-   * not merely the visible 12-week range.
+   * Workload counts use complete calendar months.
    */
 
   const workloadRange = useMemo(() => {
@@ -328,10 +328,6 @@ export default function PlannerPage() {
       }));
 
       setRoles(activeRoles);
-
-      /*
-       * Volunteer serving preference is loaded here.
-       */
 
       const {
         data: volunteersData,
@@ -438,11 +434,7 @@ export default function PlannerPage() {
       );
 
       /*
-       * Workload entries.
-       *
-       * This covers complete calendar months so
-       * "1/2 this month" remains accurate even when
-       * the planner begins partway through a month.
+       * Workload entries cover complete months.
        */
 
       const {
@@ -469,7 +461,7 @@ export default function PlannerPage() {
       );
 
       /*
-       * Blackouts cover the visible planner range.
+       * Blackouts.
        */
 
       const {
@@ -637,14 +629,7 @@ export default function PlannerPage() {
    * SERVING FREQUENCY
    * ---------------------------------------------------------
    *
-   * Count distinct SERVICES, not roles.
-   *
-   * A volunteer doing Sound + Projection at the
-   * same service counts as serving once.
-   *
-   * Separate services on the same date count
-   * separately because they have different
-   * template IDs.
+   * Count distinct services, not roles.
    */
 
   function getVolunteerMonthlyServiceCount(
@@ -654,9 +639,8 @@ export default function PlannerPage() {
     const month =
       serviceDate.slice(0, 7);
 
-    const uniqueServices = new Set<
-      string
-    >();
+    const uniqueServices =
+      new Set<string>();
 
     workloadEntries.forEach((entry) => {
       if (
@@ -710,16 +694,6 @@ export default function PlannerPage() {
 
     return `${volunteer.name} — ${scheduled}/${preference} this month`;
   }
-
-  /*
-   * Sort volunteers for each service.
-   *
-   * Volunteers who are further below their stated
-   * preference appear first.
-   *
-   * People without a preference remain available,
-   * but appear after people with a stated target.
-   */
 
   function getSortedVolunteersForDate(
     serviceDate: string
@@ -784,11 +758,6 @@ export default function PlannerPage() {
             );
           }
 
-          /*
-           * If both have the same remaining
-           * preference, favour the person who
-           * has served fewer times.
-           */
           if (aCount !== bCount) {
             return aCount - bCount;
           }
@@ -1441,6 +1410,179 @@ export default function PlannerPage() {
 
   /*
    * ---------------------------------------------------------
+   * DELETE DRAFT SERVICE
+   * ---------------------------------------------------------
+   *
+   * A service is DATE + TEMPLATE.
+   *
+   * Only draft services can be deleted.
+   *
+   * No volunteer notifications are sent because
+   * draft schedules have never been made official.
+   */
+
+  async function deleteService(
+    service: ServiceInstance
+  ) {
+    const state =
+      getServicePublishState(
+        service.date,
+        service.templateId
+      );
+
+    if (state.isPublished) {
+      setError(
+        `${service.templateName} on ${longDate(
+          service.date
+        )} is published. Unpublish it before deleting it.`
+      );
+
+      return;
+    }
+
+    /*
+     * Defensive check for partially published
+     * services as well.
+     */
+    if (state.published > 0) {
+      setError(
+        `${service.templateName} on ${longDate(
+          service.date
+        )} contains published schedule rows. Unpublish the service before deleting it.`
+      );
+
+      return;
+    }
+
+    const assignedCount =
+      service.entries.filter(
+        (entry) =>
+          entry.volunteer_id
+      ).length;
+
+    const assignmentText =
+      assignedCount === 0
+        ? "There are no volunteers assigned."
+        : assignedCount === 1
+        ? "1 volunteer assignment will also be removed."
+        : `${assignedCount} volunteer assignments will also be removed.`;
+
+    const confirmed =
+      window.confirm(
+        `Delete ${service.templateName} on ${longDate(
+          service.date
+        )}?\n\n${assignmentText}\n\nThis cannot be undone.`
+      );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingService(
+      service.key
+    );
+
+    setError("");
+    setSuccessMessage("");
+
+    try {
+      /*
+       * Delete only the exact service:
+       *
+       * DATE + TEMPLATE
+       *
+       * This prevents another service on the same
+       * date from being deleted accidentally.
+       */
+
+      let query = supabase
+        .from("schedule_entries")
+        .delete()
+        .eq(
+          "date",
+          service.date
+        );
+
+      if (service.templateId) {
+        query = query.eq(
+          "template_id",
+          service.templateId
+        );
+      } else {
+        query = query.is(
+          "template_id",
+          null
+        );
+      }
+
+      const {
+        error: deleteError,
+      } = await query;
+
+      if (deleteError) {
+        throw new Error(
+          `Could not delete service: ${deleteError.message}`
+        );
+      }
+
+      /*
+       * Remove the service from the visible planner.
+       */
+
+      setEntries((current) =>
+        current.filter(
+          (entry) =>
+            !(
+              entry.date ===
+                service.date &&
+              (entry.template_id ??
+                null) ===
+                service.templateId
+            )
+        )
+      );
+
+      /*
+       * Remove it from serving-frequency counts.
+       */
+
+      setWorkloadEntries(
+        (current) =>
+          current.filter(
+            (entry) =>
+              !(
+                entry.date ===
+                  service.date &&
+                (entry.template_id ??
+                  null) ===
+                  service.templateId
+              )
+          )
+      );
+
+      setSuccessMessage(
+        `${service.templateName} on ${longDate(
+          service.date
+        )} was deleted.`
+      );
+    } catch (err) {
+      console.error(
+        "Delete service error:",
+        err
+      );
+
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not delete this service."
+      );
+    } finally {
+      setDeletingService(null);
+    }
+  }
+
+  /*
+   * ---------------------------------------------------------
    * UPDATE ASSIGNMENT
    * ---------------------------------------------------------
    */
@@ -1528,11 +1670,6 @@ export default function PlannerPage() {
     setError("");
     setSuccessMessage("");
 
-    /*
-     * Optimistically update both the visible
-     * planner and workload calculation.
-     */
-
     const updatedEntry = {
       ...entry,
       volunteer_id:
@@ -1568,12 +1705,6 @@ export default function PlannerPage() {
                 : item
           );
         }
-
-        /*
-         * If this entry falls within the
-         * workload calendar range but was
-         * not already present, add it.
-         */
 
         if (
           date >=
@@ -1730,8 +1861,6 @@ export default function PlannerPage() {
    * ---------------------------------------------------------
    * BUILD SERVICE INSTANCES
    * ---------------------------------------------------------
-   *
-   * One service = DATE + TEMPLATE.
    */
 
   const serviceInstances =
@@ -2111,11 +2240,11 @@ export default function PlannerPage() {
 
             <p className="mt-1 text-sm text-gray-600">
               Draft services can be
-              edited without notifying
-              volunteers. Publishing
-              makes that service official
-              and sends assignment
-              notifications.
+              edited or deleted without
+              notifying volunteers.
+              Publishing makes a service
+              official and sends
+              assignment notifications.
             </p>
 
             <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -2127,9 +2256,17 @@ export default function PlannerPage() {
                       service.templateId
                     );
 
-                  const isSaving =
+                  const isPublishing =
                     publishingService ===
                     service.key;
+
+                  const isDeleting =
+                    deletingService ===
+                    service.key;
+
+                  const isBusy =
+                    isPublishing ||
+                    isDeleting;
 
                   return (
                     <div
@@ -2187,16 +2324,36 @@ export default function PlannerPage() {
                           )
                         }
                         disabled={
-                          isSaving
+                          isBusy
                         }
                         className="mt-4 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-900 shadow-sm hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-60"
                       >
-                        {isSaving
+                        {isPublishing
                           ? "Saving..."
                           : state.isPublished
                           ? "Unpublish"
                           : "Publish"}
                       </button>
+
+                      {!state.isPublished &&
+                      state.published === 0 ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            deleteService(
+                              service
+                            )
+                          }
+                          disabled={
+                            isBusy
+                          }
+                          className="mt-2 w-full rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-700 shadow-sm hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {isDeleting
+                            ? "Deleting..."
+                            : "Delete Service"}
+                        </button>
+                      ) : null}
                     </div>
                   );
                 }
