@@ -27,6 +27,11 @@ type CurrentVolunteer = {
   active: boolean;
 };
 
+type VolunteerRole = {
+  volunteer_id: string;
+  role_id: string;
+};
+
 type ScheduleEntry = {
   id: string;
   date: string;
@@ -34,6 +39,12 @@ type ScheduleEntry = {
   volunteer_id: string | null;
   status: string | null;
   published: boolean;
+  template_id: string | null;
+};
+
+type ServiceTemplate = {
+  id: string;
+  name: string;
 };
 
 type Blackout = {
@@ -55,6 +66,13 @@ type DisplayGroup = {
   label: string;
   icon: string;
   roleNames: string[];
+};
+
+type ServiceGroup = {
+  key: string;
+  templateId: string | null;
+  templateName: string;
+  entries: ScheduleEntry[];
 };
 
 function withTimeout<T>(
@@ -124,7 +142,7 @@ function getDashboardItems(role: AppRole | null): DashboardItem[] {
       {
         title: "Planner",
         description:
-          "Create schedule rows, assign volunteers, and publish services.",
+          "Create services, assign volunteers, and publish schedules.",
         href: "/planner",
         buttonText: "Open",
       },
@@ -188,7 +206,8 @@ function getDashboardItems(role: AppRole | null): DashboardItem[] {
     },
     {
       title: "My Availability",
-      description: "Add dates when you are unavailable to serve.",
+      description:
+        "Set your serving preference and dates when you are unavailable.",
       href: "/my-blackouts",
       buttonText: "Update",
     },
@@ -202,8 +221,10 @@ function getDashboardItems(role: AppRole | null): DashboardItem[] {
 }
 
 /*
- * These are the roles Heike currently includes
- * in the weekly Sunday serving list.
+ * Compact Sunday roster.
+ *
+ * These are the roles included in the main weekly
+ * Sunday serving list.
  */
 const DISPLAY_GROUPS: DisplayGroup[] = [
   {
@@ -274,6 +295,10 @@ export default function HomePage() {
   const [roles, setRoles] = useState<Role[]>([]);
   const [volunteers, setVolunteers] = useState<Volunteer[]>([]);
   const [entries, setEntries] = useState<ScheduleEntry[]>([]);
+  const [templates, setTemplates] = useState<ServiceTemplate[]>([]);
+  const [volunteerRoles, setVolunteerRoles] = useState<
+    VolunteerRole[]
+  >([]);
 
   const [homeLoading, setHomeLoading] = useState(true);
   const [authLoaded, setAuthLoaded] = useState(false);
@@ -338,6 +363,7 @@ export default function HomePage() {
           setUserEmail(null);
           setUserRole(null);
           setCurrentVolunteer(null);
+          setVolunteerRoles([]);
           setAuthLoaded(true);
           return;
         }
@@ -432,6 +458,42 @@ export default function HomePage() {
         }
 
         setCurrentVolunteer(volunteer);
+
+        /*
+         * Load only this volunteer's approved serving roles.
+         *
+         * This is the authorization list used by the Home
+         * page when deciding whether "Open — Claim" should
+         * be available.
+         */
+
+        if (volunteer) {
+          const volunteerRolesRes = await withTimeout(
+            supabase
+              .from("volunteer_roles")
+              .select("volunteer_id, role_id")
+              .eq("volunteer_id", volunteer.id),
+            "Home volunteer roles query"
+          );
+
+          if (!isMounted) return;
+
+          if (volunteerRolesRes.error) {
+            console.error(
+              "Home volunteer roles lookup failed:",
+              volunteerRolesRes.error
+            );
+
+            setVolunteerRoles([]);
+          } else {
+            setVolunteerRoles(
+              (volunteerRolesRes.data as VolunteerRole[]) ?? []
+            );
+          }
+        } else {
+          setVolunteerRoles([]);
+        }
+
         setAuthLoaded(true);
       } catch (err) {
         if (!isMounted) return;
@@ -447,6 +509,7 @@ export default function HomePage() {
         setUserEmail(null);
         setUserRole(null);
         setCurrentVolunteer(null);
+        setVolunteerRoles([]);
         setAuthLoaded(true);
       }
     }
@@ -524,10 +587,34 @@ export default function HomePage() {
           (volunteersRes.data as Volunteer[]) ?? []
         );
 
+        /*
+         * Load template names so that separate services on
+         * the same date can be displayed independently.
+         */
+
+        const templatesRes = await withTimeout(
+          supabase
+            .from("service_templates")
+            .select("id, name"),
+          "Home templates query"
+        );
+
+        if (!isMounted) return;
+
+        if (templatesRes.error) {
+          throw new Error(
+            `Templates query failed: ${templatesRes.error.message}`
+          );
+        }
+
+        setTemplates(
+          (templatesRes.data as ServiceTemplate[]) ?? []
+        );
+
         let entriesQuery = supabase
           .from("schedule_entries")
           .select(
-            "id, date, role_id, volunteer_id, status, published"
+            "id, date, role_id, volunteer_id, status, published, template_id"
           )
           .eq("date", selectedSundayStr);
 
@@ -649,50 +736,70 @@ export default function HomePage() {
     );
   }, [roles]);
 
-  const entryByRoleId = useMemo(() => {
-    const map = new Map<string, ScheduleEntry>();
+  const templateMap = useMemo(() => {
+    return new Map(
+      templates.map((template) => [
+        template.id,
+        template.name,
+      ])
+    );
+  }, [templates]);
 
-    for (const entry of entries) {
-      map.set(entry.role_id, entry);
-    }
-
-    return map;
-  }, [entries]);
+  const approvedRoleIds = useMemo(() => {
+    return new Set(
+      volunteerRoles.map((item) => item.role_id)
+    );
+  }, [volunteerRoles]);
 
   /*
    * ---------------------------------------------------------
-   * COMPACT WEEKLY ROSTER
+   * SERVICE GROUPING
+   * ---------------------------------------------------------
+   *
+   * A service is DATE + TEMPLATE.
+   *
+   * Legacy rows with no template_id are grouped together as
+   * "Legacy Schedule".
+   *
+   * This prevents two services on the same Sunday from
+   * overwriting one another merely because they use the
+   * same role.
    * ---------------------------------------------------------
    */
 
-  const displayGroups = useMemo(() => {
-    return DISPLAY_GROUPS.map((group) => {
-      const positions = group.roleNames.map((roleName) => {
-        const role =
-          roleMap.get(roleName.toLowerCase()) ?? null;
+  const services = useMemo<ServiceGroup[]>(() => {
+    const groups = new Map<string, ServiceGroup>();
 
-        const entry = role
-          ? entryByRoleId.get(role.id) ?? null
-          : null;
+    for (const entry of entries) {
+      const key = entry.template_id ?? "legacy";
 
-        const assignedName = entry?.volunteer_id
-          ? volunteerMap.get(entry.volunteer_id) ?? null
-          : null;
+      if (!groups.has(key)) {
+        groups.set(key, {
+          key,
+          templateId: entry.template_id,
+          templateName: entry.template_id
+            ? templateMap.get(entry.template_id) ??
+              "Sunday Service"
+            : "Legacy Schedule",
+          entries: [],
+        });
+      }
 
-        return {
-          roleName,
-          role,
-          entry,
-          assignedName,
-        };
-      });
+      groups.get(key)!.entries.push(entry);
+    }
 
-      return {
-        ...group,
-        positions,
-      };
+    return Array.from(groups.values()).sort((a, b) => {
+      if (a.templateId === null && b.templateId !== null) {
+        return 1;
+      }
+
+      if (a.templateId !== null && b.templateId === null) {
+        return -1;
+      }
+
+      return a.templateName.localeCompare(b.templateName);
     });
-  }, [roleMap, entryByRoleId, volunteerMap]);
+  }, [entries, templateMap]);
 
   const dashboardItems =
     getDashboardItems(effectiveRole);
@@ -728,7 +835,7 @@ export default function HomePage() {
    */
 
   async function claimRole(
-    entryId: string,
+    entry: ScheduleEntry,
     roleName: string
   ) {
     if (!currentVolunteer) {
@@ -740,6 +847,35 @@ export default function HomePage() {
 
     setClaimMessage("");
     setClaimError("");
+
+    /*
+     * Defensive qualification check.
+     *
+     * The UI also hides the Claim action when the volunteer
+     * is not approved, but this check prevents someone from
+     * bypassing the button.
+     */
+
+    if (!approvedRoleIds.has(entry.role_id)) {
+      setClaimError(
+        `You are not currently approved to serve in ${roleName}.`
+      );
+      return;
+    }
+
+    if (!entry.published) {
+      setClaimError(
+        "This position has not been published and cannot be claimed."
+      );
+      return;
+    }
+
+    if (entry.volunteer_id) {
+      setClaimError(
+        "This position is no longer open."
+      );
+      return;
+    }
 
     if (blackout?.is_hard) {
       setClaimError(
@@ -769,20 +905,62 @@ export default function HomePage() {
 
     if (!confirmed) return;
 
-    setClaimingEntryId(entryId);
+    setClaimingEntryId(entry.id);
 
     try {
+      /*
+       * Re-check qualification immediately before the update.
+       * This protects against the approval having been removed
+       * since the page loaded.
+       */
+
+      const qualificationRes = await withTimeout(
+        supabase
+          .from("volunteer_roles")
+          .select("volunteer_id, role_id")
+          .eq("volunteer_id", currentVolunteer.id)
+          .eq("role_id", entry.role_id)
+          .maybeSingle(),
+        "Claim qualification check"
+      );
+
+      if (qualificationRes.error) {
+        throw new Error(
+          `Could not verify role approval: ${qualificationRes.error.message}`
+        );
+      }
+
+      if (!qualificationRes.data) {
+        setVolunteerRoles((current) =>
+          current.filter(
+            (item) => item.role_id !== entry.role_id
+          )
+        );
+
+        throw new Error(
+          `You are not currently approved to serve in ${roleName}.`
+        );
+      }
+
+      /*
+       * Atomic claim:
+       *
+       * The row must still be published AND still have no
+       * volunteer. If somebody else claimed it first, this
+       * update returns no rows.
+       */
+
       const { data, error } = await supabase
         .from("schedule_entries")
         .update({
           volunteer_id: currentVolunteer.id,
           status: "assigned",
         })
-        .eq("id", entryId)
+        .eq("id", entry.id)
         .eq("published", true)
         .is("volunteer_id", null)
         .select(
-          "id, date, role_id, volunteer_id, status, published"
+          "id, date, role_id, volunteer_id, status, published, template_id"
         );
 
       if (error) {
@@ -799,12 +977,17 @@ export default function HomePage() {
         data[0] as ScheduleEntry;
 
       setEntries((current) =>
-        current.map((entry) =>
-          entry.id === claimedEntry.id
+        current.map((currentEntry) =>
+          currentEntry.id === claimedEntry.id
             ? claimedEntry
-            : entry
+            : currentEntry
         )
       );
+
+      /*
+       * Make sure the volunteer name is immediately available
+       * in the local display map after the claim.
+       */
 
       setVolunteers((current) => {
         if (
@@ -843,6 +1026,184 @@ export default function HomePage() {
     } finally {
       setClaimingEntryId(null);
     }
+  }
+
+  /*
+   * ---------------------------------------------------------
+   * RENDER ONE SERVICE
+   * ---------------------------------------------------------
+   */
+
+  function renderService(service: ServiceGroup) {
+    const entryByRoleId = new Map<string, ScheduleEntry>();
+
+    for (const entry of service.entries) {
+      entryByRoleId.set(entry.role_id, entry);
+    }
+
+    const displayGroups = DISPLAY_GROUPS.map((group) => {
+      const positions = group.roleNames.map((roleName) => {
+        const role =
+          roleMap.get(roleName.toLowerCase()) ?? null;
+
+        const entry = role
+          ? entryByRoleId.get(role.id) ?? null
+          : null;
+
+        const assignedName = entry?.volunteer_id
+          ? volunteerMap.get(entry.volunteer_id) ?? null
+          : null;
+
+        return {
+          roleName,
+          role,
+          entry,
+          assignedName,
+        };
+      });
+
+      return {
+        ...group,
+        positions,
+      };
+    });
+
+    return (
+      <div key={service.key}>
+        {services.length > 1 ? (
+          <div className="border-b border-stone-200 bg-stone-50 px-6 py-3">
+            <div className="text-sm font-semibold text-gray-900">
+              {service.templateName}
+            </div>
+          </div>
+        ) : null}
+
+        <div className="grid md:grid-cols-2">
+          {displayGroups.map((group, index) => {
+            const hasOpenPosition =
+              group.positions.some(
+                (position) =>
+                  !!position.entry &&
+                  !position.entry.volunteer_id
+              );
+
+            return (
+              <div
+                key={`${service.key}-${group.label}`}
+                className={`border-stone-200 px-6 py-4 ${
+                  index <
+                  displayGroups.length - 2
+                    ? "border-b"
+                    : ""
+                } ${
+                  index % 2 === 0
+                    ? "md:border-r"
+                    : ""
+                }`}
+              >
+                <div className="flex items-start gap-4">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-stone-100 text-xl">
+                    {group.icon}
+                  </div>
+
+                  <div className="min-w-0 flex-1">
+                    <div className="font-semibold text-gray-900">
+                      {group.label}
+                    </div>
+
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                      {group.positions.map(
+                        (position, positionIndex) => {
+                          const entry =
+                            position.entry;
+
+                          const isOpen =
+                            !!entry &&
+                            !entry.volunteer_id;
+
+                          const isApproved =
+                            !!entry &&
+                            approvedRoleIds.has(
+                              entry.role_id
+                            );
+
+                          const canClaimThis =
+                            canClaim &&
+                            isOpen &&
+                            !!entry?.published &&
+                            isApproved;
+
+                          const isClaiming =
+                            claimingEntryId ===
+                            entry?.id;
+
+                          return (
+                            <span
+                              key={position.roleName}
+                              className="inline-flex items-center"
+                            >
+                              {positionIndex > 0 ? (
+                                <span className="mr-2 text-stone-400">
+                                  •
+                                </span>
+                              ) : null}
+
+                              {position.assignedName ? (
+                                <span className="text-gray-700">
+                                  {
+                                    position.assignedName
+                                  }
+                                </span>
+                              ) : canClaimThis &&
+                                entry ? (
+                                <button
+                                  type="button"
+                                  disabled={isClaiming}
+                                  onClick={() =>
+                                    claimRole(
+                                      entry,
+                                      position.roleName
+                                    )
+                                  }
+                                  className="font-semibold text-amber-700 hover:text-amber-800 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  {isClaiming
+                                    ? "Claiming..."
+                                    : "Open — Claim"}
+                                </button>
+                              ) : (
+                                <span
+                                  className={
+                                    isOpen
+                                      ? "font-medium text-amber-700"
+                                      : "text-stone-400"
+                                  }
+                                >
+                                  {isOpen
+                                    ? "Open"
+                                    : "—"}
+                                </span>
+                              )}
+                            </span>
+                          );
+                        }
+                      )}
+                    </div>
+
+                    {hasOpenPosition && canClaim ? (
+                      <div className="sr-only">
+                        Approved open positions may be
+                        claimed.
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -1021,132 +1382,10 @@ export default function HomePage() {
                   )}
                 </div>
               ) : (
-                <div className="grid md:grid-cols-2">
-                  {displayGroups.map((group, index) => {
-                    const names = group.positions.map(
-                      (position) =>
-                        position.assignedName || "Open"
-                    );
-
-                    const hasOpenPosition =
-                      group.positions.some(
-                        (position) =>
-                          !!position.entry &&
-                          !position.entry.volunteer_id
-                      );
-
-                    return (
-                      <div
-                        key={group.label}
-                        className={`border-stone-200 px-6 py-4 ${
-                          index <
-                          displayGroups.length - 2
-                            ? "border-b"
-                            : ""
-                        } ${
-                          index % 2 === 0
-                            ? "md:border-r"
-                            : ""
-                        }`}
-                      >
-                        <div className="flex items-start gap-4">
-                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-stone-100 text-xl">
-                            {group.icon}
-                          </div>
-
-                          <div className="min-w-0 flex-1">
-                            <div className="font-semibold text-gray-900">
-                              {group.label}
-                            </div>
-
-                            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-                              {group.positions.map(
-                                (position, positionIndex) => {
-                                  const entry =
-                                    position.entry;
-
-                                  const isOpen =
-                                    !!entry &&
-                                    !entry.volunteer_id;
-
-                                  const canClaimThis =
-                                    canClaim &&
-                                    isOpen &&
-                                    entry.published;
-
-                                  const isClaiming =
-                                    claimingEntryId ===
-                                    entry?.id;
-
-                                  return (
-                                    <span
-                                      key={
-                                        position.roleName
-                                      }
-                                      className="inline-flex items-center"
-                                    >
-                                      {positionIndex >
-                                      0 ? (
-                                        <span className="mr-2 text-stone-400">
-                                          •
-                                        </span>
-                                      ) : null}
-
-                                      {position.assignedName ? (
-                                        <span className="text-gray-700">
-                                          {
-                                            position.assignedName
-                                          }
-                                        </span>
-                                      ) : canClaimThis ? (
-                                        <button
-                                          type="button"
-                                          disabled={
-                                            isClaiming
-                                          }
-                                          onClick={() =>
-                                            claimRole(
-                                              entry.id,
-                                              position.roleName
-                                            )
-                                          }
-                                          className="font-semibold text-amber-700 hover:text-amber-800 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
-                                        >
-                                          {isClaiming
-                                            ? "Claiming..."
-                                            : "Open — Claim"}
-                                        </button>
-                                      ) : (
-                                        <span
-                                          className={
-                                            isOpen
-                                              ? "text-amber-700"
-                                              : "text-stone-400"
-                                          }
-                                        >
-                                          {isOpen
-                                            ? "Open"
-                                            : "—"}
-                                        </span>
-                                      )}
-                                    </span>
-                                  );
-                                }
-                              )}
-                            </div>
-
-                            {hasOpenPosition &&
-                            canClaim ? (
-                              <div className="sr-only">
-                                Open positions may be
-                                claimed.
-                              </div>
-                            ) : null}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
+                <div>
+                  {services.map((service) =>
+                    renderService(service)
+                  )}
                 </div>
               )}
 
