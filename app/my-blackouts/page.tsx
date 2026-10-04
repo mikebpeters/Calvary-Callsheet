@@ -10,6 +10,7 @@ type Volunteer = {
   name: string;
   email: string | null;
   active: boolean;
+  preferred_services_per_month: number | null;
 };
 
 type Blackout = {
@@ -65,32 +66,25 @@ function getDatesInRange(
 export default function MyBlackoutsPage() {
   const supabase = useMemo(() => createClient(), []);
 
-  const today = useMemo(
-    () => toYmd(new Date()),
-    []
-  );
+  const today = useMemo(() => toYmd(new Date()), []);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [isSignedIn, setIsSignedIn] =
-    useState(false);
+  const [isSignedIn, setIsSignedIn] = useState(false);
 
   const [error, setError] = useState("");
+  const [preferenceMessage, setPreferenceMessage] =
+    useState("");
 
-  const [
-    currentVolunteer,
-    setCurrentVolunteer,
-  ] = useState<Volunteer | null>(null);
+  const [currentVolunteer, setCurrentVolunteer] =
+    useState<Volunteer | null>(null);
 
-  const [blackouts, setBlackouts] = useState<
-    Blackout[]
-  >([]);
+  const [blackouts, setBlackouts] = useState<Blackout[]>(
+    []
+  );
 
-  const [startDate, setStartDate] =
-    useState(today);
-
-  const [endDate, setEndDate] =
-    useState(today);
+  const [startDate, setStartDate] = useState(today);
+  const [endDate, setEndDate] = useState(today);
 
   const [note, setNote] = useState("");
   const [isHard, setIsHard] = useState(false);
@@ -149,7 +143,7 @@ export default function MyBlackoutsPage() {
         } = await supabase
           .from("volunteers")
           .select(
-            "id, user_id, name, email, active"
+            "id, user_id, name, email, active, preferred_services_per_month"
           )
           .eq("user_id", user.id)
           .eq("active", true)
@@ -164,8 +158,7 @@ export default function MyBlackoutsPage() {
         }
 
         let volunteerData: Volunteer | null =
-          (linkedVolunteer as Volunteer | null) ??
-          null;
+          (linkedVolunteer as Volunteer | null) ?? null;
 
         /*
          * -----------------------------------------------------
@@ -184,7 +177,7 @@ export default function MyBlackoutsPage() {
           } = await supabase
             .from("volunteers")
             .select(
-              "id, user_id, name, email, active"
+              "id, user_id, name, email, active, preferred_services_per_month"
             )
             .ilike("email", normalizedEmail)
             .eq("active", true)
@@ -230,7 +223,7 @@ export default function MyBlackoutsPage() {
                 .eq("id", emailVolunteer.id)
                 .is("user_id", null)
                 .select(
-                  "id, user_id, name, email, active"
+                  "id, user_id, name, email, active, preferred_services_per_month"
                 )
                 .maybeSingle();
 
@@ -255,7 +248,7 @@ export default function MyBlackoutsPage() {
                 } = await supabase
                   .from("volunteers")
                   .select(
-                    "id, user_id, name, email, active"
+                    "id, user_id, name, email, active, preferred_services_per_month"
                   )
                   .eq("id", emailVolunteer.id)
                   .maybeSingle();
@@ -270,8 +263,7 @@ export default function MyBlackoutsPage() {
 
                 if (
                   refreshedVolunteer?.user_id &&
-                  refreshedVolunteer.user_id !==
-                    user.id
+                  refreshedVolunteer.user_id !== user.id
                 ) {
                   throw new Error(
                     "This volunteer profile was linked to another account. Please contact an administrator."
@@ -282,12 +274,10 @@ export default function MyBlackoutsPage() {
                   (refreshedVolunteer as Volunteer | null) ??
                   null;
               } else {
-                volunteerData =
-                  linkedRecord as Volunteer;
+                volunteerData = linkedRecord as Volunteer;
               }
             } else {
-              volunteerData =
-                emailVolunteer as Volunteer;
+              volunteerData = emailVolunteer as Volunteer;
             }
           }
         }
@@ -317,13 +307,8 @@ export default function MyBlackoutsPage() {
           error: blackoutError,
         } = await supabase
           .from("volunteer_blackouts")
-          .select(
-            "id, date, note, is_hard"
-          )
-          .eq(
-            "volunteer_id",
-            volunteerData.id
-          )
+          .select("id, date, note, is_hard")
+          .eq("volunteer_id", volunteerData.id)
           .gte("date", today)
           .order("date", {
             ascending: true,
@@ -343,18 +328,14 @@ export default function MyBlackoutsPage() {
           id: blackout.id,
           date: blackout.date,
           note: blackout.note,
-          is_hard:
-            blackout.is_hard ?? false,
+          is_hard: blackout.is_hard ?? false,
         }));
 
         setBlackouts(safeBlackouts);
       } catch (err) {
         if (!isMounted) return;
 
-        console.error(
-          "My Availability load error:",
-          err
-        );
+        console.error("My Availability load error:", err);
 
         setError(
           err instanceof Error
@@ -384,17 +365,13 @@ export default function MyBlackoutsPage() {
    * ---------------------------------------------------------
    */
 
-  async function reloadBlackouts(
-    volunteerId: string
-  ) {
+  async function reloadBlackouts(volunteerId: string) {
     const {
       data,
       error: blackoutError,
     } = await supabase
       .from("volunteer_blackouts")
-      .select(
-        "id, date, note, is_hard"
-      )
+      .select("id, date, note, is_hard")
       .eq("volunteer_id", volunteerId)
       .gte("date", today)
       .order("date", {
@@ -402,20 +379,17 @@ export default function MyBlackoutsPage() {
       });
 
     if (blackoutError) {
-      throw new Error(
-        blackoutError.message
-      );
+      throw new Error(blackoutError.message);
     }
 
-    const safeBlackouts: Blackout[] = (
-      data ?? []
-    ).map((blackout) => ({
-      id: blackout.id,
-      date: blackout.date,
-      note: blackout.note,
-      is_hard:
-        blackout.is_hard ?? false,
-    }));
+    const safeBlackouts: Blackout[] = (data ?? []).map(
+      (blackout) => ({
+        id: blackout.id,
+        date: blackout.date,
+        note: blackout.note,
+        is_hard: blackout.is_hard ?? false,
+      })
+    );
 
     setBlackouts(safeBlackouts);
   }
@@ -435,6 +409,7 @@ export default function MyBlackoutsPage() {
     }
 
     setError("");
+    setPreferenceMessage("");
 
     if (!startDate || !endDate) {
       setError(
@@ -450,10 +425,7 @@ export default function MyBlackoutsPage() {
       return;
     }
 
-    const dates = getDatesInRange(
-      startDate,
-      endDate
-    );
+    const dates = getDatesInRange(startDate, endDate);
 
     if (dates.length > 90) {
       setError(
@@ -465,27 +437,19 @@ export default function MyBlackoutsPage() {
     setSaving(true);
 
     try {
-      const rowsToInsert = dates.map(
-        (date) => ({
-          volunteer_id:
-            currentVolunteer.id,
-          date,
-          note:
-            note.trim() || null,
-          is_hard: isHard,
-        })
-      );
+      const rowsToInsert = dates.map((date) => ({
+        volunteer_id: currentVolunteer.id,
+        date,
+        note: note.trim() || null,
+        is_hard: isHard,
+      }));
 
-      const { error: saveError } =
-        await supabase
-          .from(
-            "volunteer_blackouts"
-          )
-          .upsert(rowsToInsert, {
-            onConflict:
-              "volunteer_id,date",
-            ignoreDuplicates: false,
-          });
+      const { error: saveError } = await supabase
+        .from("volunteer_blackouts")
+        .upsert(rowsToInsert, {
+          onConflict: "volunteer_id,date",
+          ignoreDuplicates: false,
+        });
 
       if (saveError) {
         throw new Error(
@@ -502,14 +466,9 @@ export default function MyBlackoutsPage() {
       setIsHard(false);
       setEndDate(startDate);
 
-      await reloadBlackouts(
-        currentVolunteer.id
-      );
+      await reloadBlackouts(currentVolunteer.id);
     } catch (err) {
-      console.error(
-        "Add availability error:",
-        err
-      );
+      console.error("Add availability error:", err);
 
       setError(
         err instanceof Error
@@ -527,24 +486,18 @@ export default function MyBlackoutsPage() {
    * ---------------------------------------------------------
    */
 
-  async function removeBlackout(
-    id: string
-  ) {
+  async function removeBlackout(id: string) {
     if (!currentVolunteer) return;
 
     setError("");
+    setPreferenceMessage("");
 
     try {
-      const {
-        error: deleteError,
-      } = await supabase
+      const { error: deleteError } = await supabase
         .from("volunteer_blackouts")
         .delete()
         .eq("id", id)
-        .eq(
-          "volunteer_id",
-          currentVolunteer.id
-        );
+        .eq("volunteer_id", currentVolunteer.id);
 
       if (deleteError) {
         throw new Error(
@@ -552,20 +505,80 @@ export default function MyBlackoutsPage() {
         );
       }
 
-      await reloadBlackouts(
-        currentVolunteer.id
-      );
+      await reloadBlackouts(currentVolunteer.id);
     } catch (err) {
-      console.error(
-        "Remove availability error:",
-        err
-      );
+      console.error("Remove availability error:", err);
 
       setError(
         err instanceof Error
           ? err.message
           : "Could not remove unavailable date."
       );
+    }
+  }
+
+  /*
+   * ---------------------------------------------------------
+   * UPDATE SERVING PREFERENCE
+   * ---------------------------------------------------------
+   */
+
+  async function updateServingPreference(
+    value: number | null
+  ) {
+    if (!currentVolunteer) return;
+
+    setSaving(true);
+    setError("");
+    setPreferenceMessage("");
+
+    try {
+      const {
+        data,
+        error: updateError,
+      } = await supabase
+        .from("volunteers")
+        .update({
+          preferred_services_per_month: value,
+        })
+        .eq("id", currentVolunteer.id)
+        .select(
+          "id, user_id, name, email, active, preferred_services_per_month"
+        )
+        .single();
+
+      if (updateError) {
+        throw new Error(
+          `Could not update serving preference: ${updateError.message}`
+        );
+      }
+
+      setCurrentVolunteer(data as Volunteer);
+
+      if (value === null) {
+        setPreferenceMessage(
+          "Your serving preference has been set to no preference."
+        );
+      } else {
+        setPreferenceMessage(
+          `Your preference has been saved as about ${value} ${
+            value === 1 ? "service" : "services"
+          } per month.`
+        );
+      }
+    } catch (err) {
+      console.error(
+        "Serving preference update error:",
+        err
+      );
+
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not update your serving preference."
+      );
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -606,8 +619,8 @@ export default function MyBlackoutsPage() {
           </h1>
 
           <p className="mt-2 text-sm text-gray-600">
-            You need to sign in to
-            manage your availability.
+            You need to sign in to manage your
+            availability.
           </p>
 
           {error && (
@@ -638,15 +651,20 @@ export default function MyBlackoutsPage() {
   return (
     <main className="mx-auto max-w-3xl px-6 py-10">
       <div className="space-y-6">
+        {/*
+         * -----------------------------------------------------
+         * AVAILABILITY
+         * -----------------------------------------------------
+         */}
+
         <section className="rounded-2xl border bg-white p-6 shadow-sm">
           <h1 className="text-2xl font-semibold text-gray-900">
             My Availability
           </h1>
 
           <p className="mt-1 text-sm text-gray-600">
-            Mark single dates or date
-            ranges when you are unavailable
-            to serve.
+            Mark single dates or date ranges when you are
+            unavailable to serve.
           </p>
 
           {currentVolunteer && (
@@ -665,22 +683,15 @@ export default function MyBlackoutsPage() {
           )}
 
           {!currentVolunteer ? (
-            /*
-             * Do not show a dead form.
-             * Explain what is wrong instead.
-             */
-
             <div className="mt-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-4">
               <h2 className="font-medium text-amber-900">
                 No volunteer profile found
               </h2>
 
               <p className="mt-1 text-sm text-amber-800">
-                We could not find an active
-                volunteer profile matching
-                the email address you used
-                to sign in. Please contact
-                an administrator.
+                We could not find an active volunteer profile
+                matching the email address you used to sign in.
+                Please contact an administrator.
               </p>
             </div>
           ) : (
@@ -700,14 +711,11 @@ export default function MyBlackoutsPage() {
                     value={startDate}
                     min={today}
                     onChange={(e) => {
-                      const value =
-                        e.target.value;
+                      const value = e.target.value;
 
                       setStartDate(value);
 
-                      if (
-                        endDate < value
-                      ) {
+                      if (endDate < value) {
                         setEndDate(value);
                       }
                     }}
@@ -728,13 +736,9 @@ export default function MyBlackoutsPage() {
                     id="end-date"
                     type="date"
                     value={endDate}
-                    min={
-                      startDate || today
-                    }
+                    min={startDate || today}
                     onChange={(e) =>
-                      setEndDate(
-                        e.target.value
-                      )
+                      setEndDate(e.target.value)
                     }
                     disabled={saving}
                     className="mt-1 block w-full rounded-xl border border-gray-300 bg-white px-3 py-3 text-base text-gray-900 shadow-sm disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500"
@@ -757,9 +761,7 @@ export default function MyBlackoutsPage() {
                     type="text"
                     value={note}
                     onChange={(e) =>
-                      setNote(
-                        e.target.value
-                      )
+                      setNote(e.target.value)
                     }
                     placeholder="Vacation, out of town..."
                     disabled={saving}
@@ -773,9 +775,7 @@ export default function MyBlackoutsPage() {
                       type="checkbox"
                       checked={isHard}
                       onChange={(e) =>
-                        setIsHard(
-                          e.target.checked
-                        )
+                        setIsHard(e.target.checked)
                       }
                       disabled={saving}
                       className="mt-1 h-4 w-4"
@@ -783,14 +783,12 @@ export default function MyBlackoutsPage() {
 
                     <span>
                       <span className="block font-medium">
-                        Hard blackout: do not
-                        schedule me
+                        Hard blackout: do not schedule me
                       </span>
 
                       <span className="mt-1 block text-xs leading-5 text-gray-500">
-                        If checked, leaders will
-                        be blocked from assigning
-                        you on this date unless
+                        If checked, leaders will be blocked
+                        from assigning you on this date unless
                         the blackout is removed.
                       </span>
                     </span>
@@ -800,9 +798,7 @@ export default function MyBlackoutsPage() {
 
               <button
                 type="button"
-                onClick={
-                  addBlackoutRange
-                }
+                onClick={addBlackoutRange}
                 disabled={saving}
                 className="mt-5 inline-flex min-h-11 items-center justify-center rounded-xl bg-blue-600 px-5 py-3 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
               >
@@ -814,6 +810,98 @@ export default function MyBlackoutsPage() {
           )}
         </section>
 
+        {/*
+         * -----------------------------------------------------
+         * SERVING PREFERENCE
+         * -----------------------------------------------------
+         */}
+
+        {currentVolunteer && (
+          <section className="rounded-2xl border bg-white p-6 shadow-sm">
+            <h2 className="text-lg font-semibold text-gray-900">
+              Serving Preference
+            </h2>
+
+            <p className="mt-1 text-sm leading-6 text-gray-600">
+              About how often would you prefer to serve each
+              month? This helps the scheduling team build a
+              schedule that works for you. It is a preference,
+              not a commitment.
+            </p>
+
+            <div className="mt-5 grid gap-3 sm:grid-cols-5">
+              {[
+                {
+                  value: null,
+                  label: "No preference",
+                },
+                {
+                  value: 1,
+                  label: "1× / month",
+                },
+                {
+                  value: 2,
+                  label: "2× / month",
+                },
+                {
+                  value: 3,
+                  label: "3× / month",
+                },
+                {
+                  value: 4,
+                  label: "4× / month",
+                },
+              ].map((option) => {
+                const selected =
+                  currentVolunteer.preferred_services_per_month ===
+                  option.value;
+
+                return (
+                  <button
+                    key={
+                      option.value === null
+                        ? "none"
+                        : option.value
+                    }
+                    type="button"
+                    onClick={() =>
+                      updateServingPreference(option.value)
+                    }
+                    disabled={saving}
+                    className={`rounded-xl border px-3 py-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                      selected
+                        ? "border-blue-600 bg-blue-50 text-blue-800 ring-1 ring-blue-600"
+                        : "border-gray-300 bg-white text-gray-800 hover:bg-stone-50"
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {preferenceMessage && (
+              <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
+                {preferenceMessage}
+              </div>
+            )}
+
+            <p className="mt-4 text-xs leading-5 text-gray-500">
+              This is your overall serving preference across
+              all roles. For example, choosing 2× per month
+              means you would generally prefer to serve on
+              about two services each month, not twice in
+              every role.
+            </p>
+          </section>
+        )}
+
+        {/*
+         * -----------------------------------------------------
+         * UPCOMING UNAVAILABLE DATES
+         * -----------------------------------------------------
+         */}
+
         {currentVolunteer && (
           <section className="rounded-2xl border bg-white p-6 shadow-sm">
             <h2 className="text-lg font-semibold text-gray-900">
@@ -821,9 +909,8 @@ export default function MyBlackoutsPage() {
             </h2>
 
             <p className="mt-1 text-sm text-gray-600">
-              These dates will be visible
-              to people preparing the
-              schedule.
+              These dates will be visible to people preparing
+              the schedule.
             </p>
 
             {blackouts.length === 0 ? (
@@ -832,55 +919,47 @@ export default function MyBlackoutsPage() {
               </p>
             ) : (
               <div className="mt-4 space-y-3">
-                {blackouts.map(
-                  (blackout) => (
-                    <div
-                      key={blackout.id}
-                      className="flex flex-col gap-3 rounded-xl border border-gray-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
-                    >
-                      <div>
-                        <div className="text-sm font-medium text-gray-900">
-                          {prettyDate(
-                            blackout.date
-                          )}
-                        </div>
-
-                        <div
-                          className={`mt-2 inline-flex rounded-full px-2 py-1 text-xs font-medium ${
-                            blackout.is_hard
-                              ? "bg-red-50 text-red-700"
-                              : "bg-amber-50 text-amber-700"
-                          }`}
-                        >
-                          {blackout.is_hard
-                            ? "Hard blackout"
-                            : "Soft unavailable"}
-                        </div>
-
-                        {blackout.note ? (
-                          <div className="mt-2 text-xs text-gray-500">
-                            {
-                              blackout.note
-                            }
-                          </div>
-                        ) : null}
+                {blackouts.map((blackout) => (
+                  <div
+                    key={blackout.id}
+                    className="flex flex-col gap-3 rounded-xl border border-gray-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div>
+                      <div className="text-sm font-medium text-gray-900">
+                        {prettyDate(blackout.date)}
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() =>
-                          removeBlackout(
-                            blackout.id
-                          )
-                        }
-                        disabled={saving}
-                        className="self-start text-sm font-medium text-red-600 hover:underline disabled:cursor-not-allowed disabled:opacity-50 sm:self-auto"
+                      <div
+                        className={`mt-2 inline-flex rounded-full px-2 py-1 text-xs font-medium ${
+                          blackout.is_hard
+                            ? "bg-red-50 text-red-700"
+                            : "bg-amber-50 text-amber-700"
+                        }`}
                       >
-                        Remove
-                      </button>
+                        {blackout.is_hard
+                          ? "Hard blackout"
+                          : "Soft unavailable"}
+                      </div>
+
+                      {blackout.note ? (
+                        <div className="mt-2 text-xs text-gray-500">
+                          {blackout.note}
+                        </div>
+                      ) : null}
                     </div>
-                  )
-                )}
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        removeBlackout(blackout.id)
+                      }
+                      disabled={saving}
+                      className="self-start text-sm font-medium text-red-600 hover:underline disabled:cursor-not-allowed disabled:opacity-50 sm:self-auto"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
               </div>
             )}
           </section>
