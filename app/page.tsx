@@ -51,6 +51,12 @@ type DashboardItem = {
   buttonText: string;
 };
 
+type SummaryRow = {
+  label: string;
+  icon: string;
+  roleNames: string[];
+};
+
 function withTimeout<T>(
   promise: PromiseLike<T>,
   label: string,
@@ -116,6 +122,9 @@ function getRoleIcon(roleName: string) {
   const key = roleName.trim().toLowerCase();
 
   if (key.includes("worship")) return "🎤";
+  if (key.includes("piano")) return "🎹";
+  if (key.includes("instrument")) return "🎸";
+  if (key.includes("vocal")) return "🎶";
   if (key.includes("sound") || key.includes("audio")) return "🎚️";
   if (key.includes("projection") || key.includes("slides")) return "📽️";
   if (key.includes("livestream") || key.includes("stream")) return "📡";
@@ -127,6 +136,8 @@ function getRoleIcon(roleName: string) {
   ) {
     return "👋";
   }
+
+  if (key.includes("usher")) return "🙋";
 
   if (
     key.includes("kids") ||
@@ -184,7 +195,7 @@ function getDashboardItems(role: AppRole | null): DashboardItem[] {
       },
       {
         title: "Lead Requests",
-        description: "Review and approve ministry leader access requests.",
+        description: "Review volunteer role and ministry leader requests.",
         href: "/admin/lead-requests",
         buttonText: "Review",
       },
@@ -235,6 +246,59 @@ function getDashboardItems(role: AppRole | null): DashboardItem[] {
     },
   ];
 }
+
+const sundaySummaryRows: SummaryRow[] = [
+  {
+    label: "Worship Leader",
+    icon: "🎤",
+    roleNames: ["Worship Leader"],
+  },
+  {
+    label: "Piano",
+    icon: "🎹",
+    roleNames: ["Piano"],
+  },
+  {
+    label: "Instruments",
+    icon: "🎸",
+    roleNames: ["Instruments"],
+  },
+  {
+    label: "Vocals",
+    icon: "🎶",
+    roleNames: ["Vocals 1", "Vocals 2", "Vocals 3"],
+  },
+  {
+    label: "Audio",
+    icon: "🎚️",
+    roleNames: ["Sound"],
+  },
+  {
+    label: "Projection",
+    icon: "📽️",
+    roleNames: ["Projection"],
+  },
+  {
+    label: "Greeters",
+    icon: "👋",
+    roleNames: ["Greeter 1"],
+  },
+  {
+    label: "Ushers",
+    icon: "🙋",
+    roleNames: ["Usher 1", "Usher 2"],
+  },
+  {
+    label: "Coffee",
+    icon: "☕",
+    roleNames: ["Coffee 1"],
+  },
+  {
+    label: "Calvary Kids",
+    icon: "👶",
+    roleNames: ["Calvary Kids"],
+  },
+];
 
 export default function HomePage() {
   const supabase = useMemo(() => createClient(), []);
@@ -289,12 +353,6 @@ export default function HomePage() {
   const isFirstSunday =
     selectedSundayStr === toYmd(firstSunday);
 
-  /*
-   * ---------------------------------------------------------
-   * AUTHENTICATION + CURRENT VOLUNTEER
-   * ---------------------------------------------------------
-   */
-
   useEffect(() => {
     let isMounted = true;
 
@@ -338,7 +396,6 @@ export default function HomePage() {
             "Home profile lookup failed:",
             profileRes.error
           );
-
           setUserRole("volunteer");
         } else {
           setUserRole(
@@ -346,10 +403,6 @@ export default function HomePage() {
               "volunteer"
           );
         }
-
-        /*
-         * First try the permanent user_id link.
-         */
 
         let volunteer: CurrentVolunteer | null = null;
 
@@ -377,10 +430,6 @@ export default function HomePage() {
             (volunteerByUserRes.data as CurrentVolunteer | null) ??
             null;
         }
-
-        /*
-         * If user_id lookup did not find the volunteer, use email.
-         */
 
         if (!volunteer && user.email) {
           const normalizedEmail =
@@ -448,12 +497,6 @@ export default function HomePage() {
     };
   }, [supabase]);
 
-  /*
-   * ---------------------------------------------------------
-   * LOAD SCHEDULE FOR SELECTED SUNDAY
-   * ---------------------------------------------------------
-   */
-
   useEffect(() => {
     if (!authLoaded) return;
 
@@ -512,11 +555,6 @@ export default function HomePage() {
           )
           .eq("date", selectedSundayStr);
 
-        /*
-         * Volunteers only see published schedule rows.
-         * Admins and ministry leaders may see draft rows.
-         */
-
         if (!canSeeDraftSchedules) {
           entriesQuery = entriesQuery.eq("published", true);
         }
@@ -538,10 +576,6 @@ export default function HomePage() {
           (entriesRes.data as ScheduleEntry[]) ?? []
         );
 
-        /*
-         * Load this volunteer's availability for the selected Sunday.
-         */
-
         if (currentVolunteer) {
           const blackoutRes = await withTimeout(
             supabase
@@ -562,7 +596,6 @@ export default function HomePage() {
               "Home blackout lookup failed:",
               blackoutRes.error
             );
-
             setBlackout(null);
           } else {
             setBlackout(
@@ -604,12 +637,6 @@ export default function HomePage() {
     supabase,
   ]);
 
-  /*
-   * ---------------------------------------------------------
-   * VOLUNTEER DISPLAY NAMES
-   * ---------------------------------------------------------
-   */
-
   const volunteerMap = useMemo(() => {
     return new Map(
       volunteers.map((volunteer) => [
@@ -619,12 +646,6 @@ export default function HomePage() {
       ])
     );
   }, [volunteers]);
-
-  /*
-   * ---------------------------------------------------------
-   * BUILD SCHEDULE ROWS
-   * ---------------------------------------------------------
-   */
 
   const roleRows = useMemo(() => {
     return roles.map((role) => {
@@ -664,11 +685,25 @@ export default function HomePage() {
   const dashboardItems =
     getDashboardItems(effectiveRole);
 
-  /*
-   * ---------------------------------------------------------
-   * SUNDAY NAVIGATION
-   * ---------------------------------------------------------
-   */
+  const summaryRows = useMemo(() => {
+    return sundaySummaryRows.map((summary) => {
+      const names = summary.roleNames.map((roleName) => {
+        const row = roleRows.find(
+          (item) =>
+            item.roleName.trim().toLowerCase() ===
+            roleName.trim().toLowerCase()
+        );
+
+        if (!row?.entryId) return "Open";
+        return row.assignedName || "Open";
+      });
+
+      return {
+        ...summary,
+        names,
+      };
+    });
+  }, [roleRows]);
 
   function goPreviousSunday() {
     if (isFirstSunday) return;
@@ -688,12 +723,6 @@ export default function HomePage() {
     setSelectedSunday(firstSunday);
   }
 
-  /*
-   * ---------------------------------------------------------
-   * CLAIM OPEN ROLE
-   * ---------------------------------------------------------
-   */
-
   async function claimRole(
     entryId: string,
     roleName: string
@@ -708,11 +737,6 @@ export default function HomePage() {
     setClaimMessage("");
     setClaimError("");
 
-    /*
-     * Hard blackout means the volunteer has explicitly said
-     * they cannot serve on this date.
-     */
-
     if (blackout?.is_hard) {
       setClaimError(
         blackout.note
@@ -721,10 +745,6 @@ export default function HomePage() {
       );
       return;
     }
-
-    /*
-     * Soft blackout gives a warning but still permits claiming.
-     */
 
     if (blackout && !blackout.is_hard) {
       const warning = blackout.note
@@ -748,12 +768,6 @@ export default function HomePage() {
     setClaimingEntryId(entryId);
 
     try {
-      /*
-       * Claim only if the published entry is still open.
-       * This protects against two volunteers claiming the
-       * same role at nearly the same time.
-       */
-
       const { data, error } = await supabase
         .from("schedule_entries")
         .update({
@@ -787,10 +801,6 @@ export default function HomePage() {
             : entry
         )
       );
-
-      /*
-       * Ensure the volunteer name can immediately be displayed.
-       */
 
       setVolunteers((current) => {
         if (
@@ -905,10 +915,79 @@ export default function HomePage() {
           </div>
         ) : (
           <div className="space-y-8">
+
+            <section className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-stone-200">
+              <div className="border-b border-stone-200 bg-stone-50 px-6 py-5">
+                <p className="text-sm font-semibold uppercase tracking-[0.15em] text-amber-700">
+                  This Sunday at Calvary
+                </p>
+
+                <h2 className="mt-1 text-2xl font-bold text-gray-900">
+                  {prettyDate(selectedSunday)}
+                </h2>
+
+                <p className="mt-1 text-sm text-gray-600">
+                  Your serving team for this service.
+                </p>
+              </div>
+
+              {homeLoading ? (
+                <div className="p-6 text-sm text-gray-600">
+                  Loading serving team...
+                </div>
+              ) : entries.length === 0 ? (
+                <div className="p-6 text-sm text-gray-600">
+                  No schedule is available for this Sunday yet.
+                </div>
+              ) : (
+                <div className="grid md:grid-cols-2">
+                  {summaryRows.map((row, index) => {
+                    const hasOpenPosition =
+                      row.names.includes("Open");
+
+                    return (
+                      <div
+                        key={row.label}
+                        className={`flex items-start gap-4 border-stone-200 px-6 py-4 ${
+                          index < summaryRows.length - 2
+                            ? "border-b"
+                            : ""
+                        } ${
+                          index % 2 === 0
+                            ? "md:border-r"
+                            : ""
+                        }`}
+                      >
+                        <div
+                          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-stone-100 text-xl"
+                          aria-hidden="true"
+                        >
+                          {row.icon}
+                        </div>
+
+                        <div className="min-w-0">
+                          <div className="text-sm font-semibold text-gray-900">
+                            {row.label}
+                          </div>
+
+                          <div
+                            className={`mt-1 text-sm ${
+                              hasOpenPosition
+                                ? "font-medium text-amber-700"
+                                : "text-gray-700"
+                            }`}
+                          >
+                            {row.names.join(", ")}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+
             <section className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-stone-200">
-              {/*
-               * Sunday navigation
-               */}
               <div className="mb-6 flex flex-col gap-3 border-b border-stone-200 pb-5 sm:flex-row sm:items-center sm:justify-between">
                 <button
                   type="button"
