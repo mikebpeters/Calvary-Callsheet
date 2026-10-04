@@ -75,6 +75,13 @@ type ServiceGroup = {
   entries: ScheduleEntry[];
 };
 
+type DisplayPosition = {
+  roleName: string;
+  role: Role | null;
+  entry: ScheduleEntry | null;
+  assignedName: string | null;
+};
+
 function withTimeout<T>(
   promise: PromiseLike<T>,
   label: string,
@@ -223,8 +230,8 @@ function getDashboardItems(role: AppRole | null): DashboardItem[] {
 /*
  * Compact Sunday roster.
  *
- * These are the roles included in the main weekly
- * Sunday serving list.
+ * Every group remains visible on the Home page so the
+ * complete Sunday team can be seen at a glance.
  */
 const DISPLAY_GROUPS: DisplayGroup[] = [
   {
@@ -296,9 +303,9 @@ export default function HomePage() {
   const [volunteers, setVolunteers] = useState<Volunteer[]>([]);
   const [entries, setEntries] = useState<ScheduleEntry[]>([]);
   const [templates, setTemplates] = useState<ServiceTemplate[]>([]);
-  const [volunteerRoles, setVolunteerRoles] = useState<
-    VolunteerRole[]
-  >([]);
+  const [volunteerRoles, setVolunteerRoles] = useState<VolunteerRole[]>(
+    []
+  );
 
   const [homeLoading, setHomeLoading] = useState(true);
   const [authLoaded, setAuthLoaded] = useState(false);
@@ -460,11 +467,10 @@ export default function HomePage() {
         setCurrentVolunteer(volunteer);
 
         /*
-         * Load only this volunteer's approved serving roles.
+         * Load this volunteer's approved serving roles.
          *
-         * This is the authorization list used by the Home
-         * page when deciding whether "Open — Claim" should
-         * be available.
+         * Home uses this list to decide which open positions
+         * the volunteer is allowed to claim.
          */
 
         if (volunteer) {
@@ -588,8 +594,8 @@ export default function HomePage() {
         );
 
         /*
-         * Load template names so that separate services on
-         * the same date can be displayed independently.
+         * Load template names so separate services on the
+         * same date can be displayed independently.
          */
 
         const templatesRes = await withTimeout(
@@ -619,7 +625,7 @@ export default function HomePage() {
           .eq("date", selectedSundayStr);
 
         /*
-         * Volunteers see only published rows.
+         * Ordinary volunteers see only published rows.
          * Admins and ministry leaders can also see drafts.
          */
 
@@ -645,8 +651,8 @@ export default function HomePage() {
         );
 
         /*
-         * Check the signed-in volunteer's availability
-         * for this Sunday.
+         * Check this volunteer's availability for the
+         * selected Sunday.
          */
 
         if (currentVolunteer) {
@@ -760,10 +766,6 @@ export default function HomePage() {
    *
    * Legacy rows with no template_id are grouped together as
    * "Legacy Schedule".
-   *
-   * This prevents two services on the same Sunday from
-   * overwriting one another merely because they use the
-   * same role.
    * ---------------------------------------------------------
    */
 
@@ -850,10 +852,6 @@ export default function HomePage() {
 
     /*
      * Defensive qualification check.
-     *
-     * The UI also hides the Claim action when the volunteer
-     * is not approved, but this check prevents someone from
-     * bypassing the button.
      */
 
     if (!approvedRoleIds.has(entry.role_id)) {
@@ -876,6 +874,10 @@ export default function HomePage() {
       );
       return;
     }
+
+    /*
+     * Respect hard and soft availability restrictions.
+     */
 
     if (blackout?.is_hard) {
       setClaimError(
@@ -909,9 +911,7 @@ export default function HomePage() {
 
     try {
       /*
-       * Re-check qualification immediately before the update.
-       * This protects against the approval having been removed
-       * since the page loaded.
+       * Re-check qualification immediately before claiming.
        */
 
       const qualificationRes = await withTimeout(
@@ -943,11 +943,10 @@ export default function HomePage() {
       }
 
       /*
-       * Atomic claim:
+       * Atomic claim.
        *
-       * The row must still be published AND still have no
-       * volunteer. If somebody else claimed it first, this
-       * update returns no rows.
+       * This update succeeds only if the row is still
+       * published and still unclaimed.
        */
 
       const { data, error } = await supabase
@@ -985,8 +984,8 @@ export default function HomePage() {
       );
 
       /*
-       * Make sure the volunteer name is immediately available
-       * in the local display map after the claim.
+       * Make sure the volunteer's name can be displayed
+       * immediately after the claim.
        */
 
       setVolunteers((current) => {
@@ -1030,6 +1029,51 @@ export default function HomePage() {
 
   /*
    * ---------------------------------------------------------
+   * POSITION VISIBILITY
+   * ---------------------------------------------------------
+   *
+   * The role heading always remains visible.
+   *
+   * Under that heading:
+   *
+   * - Assigned position: show the volunteer.
+   * - Volunteer + qualified open position: Open — Claim.
+   * - Volunteer + unqualified open position: show nothing.
+   * - Admin/leader + open position: Open.
+   * - Role absent from this service: show nothing.
+   * ---------------------------------------------------------
+   */
+
+  function shouldShowPosition(position: DisplayPosition) {
+    if (position.assignedName) {
+      return true;
+    }
+
+    const entry = position.entry;
+
+    if (!entry) {
+      return false;
+    }
+
+    const isOpen = !entry.volunteer_id;
+
+    if (!isOpen) {
+      return false;
+    }
+
+    if (canSeeDraftSchedules) {
+      return true;
+    }
+
+    return (
+      canClaim &&
+      entry.published &&
+      approvedRoleIds.has(entry.role_id)
+    );
+  }
+
+  /*
+   * ---------------------------------------------------------
    * RENDER ONE SERVICE
    * ---------------------------------------------------------
    */
@@ -1042,25 +1086,26 @@ export default function HomePage() {
     }
 
     const displayGroups = DISPLAY_GROUPS.map((group) => {
-      const positions = group.roleNames.map((roleName) => {
-        const role =
-          roleMap.get(roleName.toLowerCase()) ?? null;
+      const positions: DisplayPosition[] =
+        group.roleNames.map((roleName) => {
+          const role =
+            roleMap.get(roleName.toLowerCase()) ?? null;
 
-        const entry = role
-          ? entryByRoleId.get(role.id) ?? null
-          : null;
+          const entry = role
+            ? entryByRoleId.get(role.id) ?? null
+            : null;
 
-        const assignedName = entry?.volunteer_id
-          ? volunteerMap.get(entry.volunteer_id) ?? null
-          : null;
+          const assignedName = entry?.volunteer_id
+            ? volunteerMap.get(entry.volunteer_id) ?? null
+            : null;
 
-        return {
-          roleName,
-          role,
-          entry,
-          assignedName,
-        };
-      });
+          return {
+            roleName,
+            role,
+            entry,
+            assignedName,
+          };
+        });
 
       return {
         ...group,
@@ -1080,11 +1125,14 @@ export default function HomePage() {
 
         <div className="grid md:grid-cols-2">
           {displayGroups.map((group, index) => {
-            const hasOpenPosition =
-              group.positions.some(
-                (position) =>
-                  !!position.entry &&
-                  !position.entry.volunteer_id
+            /*
+             * Remove hidden positions before rendering so
+             * grouped roles do not get stray bullet marks.
+             */
+
+            const visiblePositions =
+              group.positions.filter(
+                shouldShowPosition
               );
 
             return (
@@ -1107,95 +1155,106 @@ export default function HomePage() {
                   </div>
 
                   <div className="min-w-0 flex-1">
+                    {/*
+                     * IMPORTANT:
+                     * The heading is always rendered even when
+                     * visiblePositions is empty.
+                     */}
+
                     <div className="font-semibold text-gray-900">
                       {group.label}
                     </div>
 
-                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-                      {group.positions.map(
-                        (position, positionIndex) => {
-                          const entry =
-                            position.entry;
+                    {visiblePositions.length > 0 ? (
+                      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                        {visiblePositions.map(
+                          (
+                            position,
+                            visibleIndex
+                          ) => {
+                            const entry =
+                              position.entry;
 
-                          const isOpen =
-                            !!entry &&
-                            !entry.volunteer_id;
+                            const isOpen =
+                              !!entry &&
+                              !entry.volunteer_id;
 
-                          const isApproved =
-                            !!entry &&
-                            approvedRoleIds.has(
-                              entry.role_id
+                            const isApproved =
+                              !!entry &&
+                              approvedRoleIds.has(
+                                entry.role_id
+                              );
+
+                            const canClaimThis =
+                              canClaim &&
+                              isOpen &&
+                              !!entry?.published &&
+                              isApproved;
+
+                            const isClaiming =
+                              claimingEntryId ===
+                              entry?.id;
+
+                            return (
+                              <span
+                                key={
+                                  position.roleName
+                                }
+                                className="inline-flex items-center"
+                              >
+                                {visibleIndex > 0 ? (
+                                  <span className="mr-2 text-stone-400">
+                                    •
+                                  </span>
+                                ) : null}
+
+                                {position.assignedName ? (
+                                  <span className="text-gray-700">
+                                    {
+                                      position.assignedName
+                                    }
+                                  </span>
+                                ) : canClaimThis &&
+                                  entry ? (
+                                  <button
+                                    type="button"
+                                    disabled={
+                                      isClaiming
+                                    }
+                                    onClick={() =>
+                                      claimRole(
+                                        entry,
+                                        position.roleName
+                                      )
+                                    }
+                                    className="font-semibold text-amber-700 hover:text-amber-800 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {isClaiming
+                                      ? "Claiming..."
+                                      : "Open — Claim"}
+                                  </button>
+                                ) : isOpen &&
+                                  canSeeDraftSchedules ? (
+                                  <span className="font-medium text-amber-700">
+                                    Open
+                                  </span>
+                                ) : null}
+                              </span>
                             );
-
-                          const canClaimThis =
-                            canClaim &&
-                            isOpen &&
-                            !!entry?.published &&
-                            isApproved;
-
-                          const isClaiming =
-                            claimingEntryId ===
-                            entry?.id;
-
-                          return (
-                            <span
-                              key={position.roleName}
-                              className="inline-flex items-center"
-                            >
-                              {positionIndex > 0 ? (
-                                <span className="mr-2 text-stone-400">
-                                  •
-                                </span>
-                              ) : null}
-
-                              {position.assignedName ? (
-                                <span className="text-gray-700">
-                                  {
-                                    position.assignedName
-                                  }
-                                </span>
-                              ) : canClaimThis &&
-                                entry ? (
-                                <button
-                                  type="button"
-                                  disabled={isClaiming}
-                                  onClick={() =>
-                                    claimRole(
-                                      entry,
-                                      position.roleName
-                                    )
-                                  }
-                                  className="font-semibold text-amber-700 hover:text-amber-800 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  {isClaiming
-                                    ? "Claiming..."
-                                    : "Open — Claim"}
-                                </button>
-                              ) : (
-                                <span
-                                  className={
-                                    isOpen
-                                      ? "font-medium text-amber-700"
-                                      : "text-stone-400"
-                                  }
-                                >
-                                  {isOpen
-                                    ? "Open"
-                                    : "—"}
-                                </span>
-                              )}
-                            </span>
-                          );
-                        }
-                      )}
-                    </div>
-
-                    {hasOpenPosition && canClaim ? (
-                      <div className="sr-only">
-                        Approved open positions may be
-                        claimed.
+                          }
+                        )}
                       </div>
-                    ) : null}
+                    ) : (
+                      /*
+                       * Intentionally blank.
+                       *
+                       * This preserves the role heading and
+                       * its place in the roster without
+                       * advertising an opening that this
+                       * volunteer cannot claim.
+                       */
+                      <div className="h-5" />
+                    )}
                   </div>
                 </div>
               </div>
