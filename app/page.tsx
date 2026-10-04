@@ -51,7 +51,7 @@ type DashboardItem = {
   buttonText: string;
 };
 
-type SummaryRow = {
+type DisplayGroup = {
   label: string;
   icon: string;
   roleNames: string[];
@@ -118,66 +118,19 @@ function prettyUserRole(role: AppRole | null) {
   return "Volunteer";
 }
 
-function getRoleIcon(roleName: string) {
-  const key = roleName.trim().toLowerCase();
-
-  if (key.includes("worship")) return "🎤";
-  if (key.includes("piano")) return "🎹";
-  if (key.includes("instrument")) return "🎸";
-  if (key.includes("vocal")) return "🎶";
-  if (key.includes("sound") || key.includes("audio")) return "🎚️";
-  if (key.includes("projection") || key.includes("slides")) return "📽️";
-  if (key.includes("livestream") || key.includes("stream")) return "📡";
-
-  if (
-    key.includes("host") ||
-    key.includes("greeter") ||
-    key.includes("welcome")
-  ) {
-    return "👋";
-  }
-
-  if (key.includes("usher")) return "🙋";
-
-  if (
-    key.includes("kids") ||
-    key.includes("children") ||
-    key.includes("nursery")
-  ) {
-    return "👶";
-  }
-
-  if (
-    key.includes("coffee") ||
-    key.includes("cafe") ||
-    key.includes("hospitality")
-  ) {
-    return "☕";
-  }
-
-  if (key.includes("prayer")) return "🙏";
-  if (key.includes("security")) return "🛡️";
-  if (key.includes("setup")) return "🪑";
-  if (key.includes("teardown")) return "🧰";
-  if (key.includes("camera")) return "📷";
-  if (key.includes("lighting") || key.includes("lights")) return "💡";
-
-  return "📋";
-}
-
 function getDashboardItems(role: AppRole | null): DashboardItem[] {
   if (role === "admin") {
     return [
       {
         title: "Planner",
         description:
-          "Create schedule rows, assign volunteers, and publish Sundays.",
+          "Create schedule rows, assign volunteers, and publish services.",
         href: "/planner",
         buttonText: "Open",
       },
       {
         title: "Open Schedule",
-        description: "Build and manage the upcoming service schedule.",
+        description: "Build and manage upcoming service schedules.",
         href: "/schedule",
         buttonText: "Open",
       },
@@ -194,8 +147,9 @@ function getDashboardItems(role: AppRole | null): DashboardItem[] {
         buttonText: "Manage",
       },
       {
-        title: "Lead Requests",
-        description: "Review volunteer role and ministry leader requests.",
+        title: "Requests",
+        description:
+          "Review volunteer role requests and ministry leader access requests.",
         href: "/admin/lead-requests",
         buttonText: "Review",
       },
@@ -247,7 +201,11 @@ function getDashboardItems(role: AppRole | null): DashboardItem[] {
   ];
 }
 
-const sundaySummaryRows: SummaryRow[] = [
+/*
+ * These are the roles Heike currently includes
+ * in the weekly Sunday serving list.
+ */
+const DISPLAY_GROUPS: DisplayGroup[] = [
   {
     label: "Worship Leader",
     icon: "🎤",
@@ -275,7 +233,7 @@ const sundaySummaryRows: SummaryRow[] = [
   },
   {
     label: "Projection",
-    icon: "📽️",
+    icon: "🎥",
     roleNames: ["Projection"],
   },
   {
@@ -353,6 +311,12 @@ export default function HomePage() {
   const isFirstSunday =
     selectedSundayStr === toYmd(firstSunday);
 
+  /*
+   * ---------------------------------------------------------
+   * AUTHENTICATION + CURRENT VOLUNTEER
+   * ---------------------------------------------------------
+   */
+
   useEffect(() => {
     let isMounted = true;
 
@@ -396,6 +360,7 @@ export default function HomePage() {
             "Home profile lookup failed:",
             profileRes.error
           );
+
           setUserRole("volunteer");
         } else {
           setUserRole(
@@ -430,6 +395,11 @@ export default function HomePage() {
             (volunteerByUserRes.data as CurrentVolunteer | null) ??
             null;
         }
+
+        /*
+         * Fall back to email if the permanent user_id link
+         * has not yet been established.
+         */
 
         if (!volunteer && user.email) {
           const normalizedEmail =
@@ -497,6 +467,12 @@ export default function HomePage() {
     };
   }, [supabase]);
 
+  /*
+   * ---------------------------------------------------------
+   * LOAD SELECTED SUNDAY
+   * ---------------------------------------------------------
+   */
+
   useEffect(() => {
     if (!authLoaded) return;
 
@@ -555,6 +531,11 @@ export default function HomePage() {
           )
           .eq("date", selectedSundayStr);
 
+        /*
+         * Volunteers see only published rows.
+         * Admins and ministry leaders can also see drafts.
+         */
+
         if (!canSeeDraftSchedules) {
           entriesQuery = entriesQuery.eq("published", true);
         }
@@ -576,6 +557,11 @@ export default function HomePage() {
           (entriesRes.data as ScheduleEntry[]) ?? []
         );
 
+        /*
+         * Check the signed-in volunteer's availability
+         * for this Sunday.
+         */
+
         if (currentVolunteer) {
           const blackoutRes = await withTimeout(
             supabase
@@ -596,6 +582,7 @@ export default function HomePage() {
               "Home blackout lookup failed:",
               blackoutRes.error
             );
+
             setBlackout(null);
           } else {
             setBlackout(
@@ -637,6 +624,12 @@ export default function HomePage() {
     supabase,
   ]);
 
+  /*
+   * ---------------------------------------------------------
+   * LOOKUP MAPS
+   * ---------------------------------------------------------
+   */
+
   const volunteerMap = useMemo(() => {
     return new Map(
       volunteers.map((volunteer) => [
@@ -647,63 +640,68 @@ export default function HomePage() {
     );
   }, [volunteers]);
 
-  const roleRows = useMemo(() => {
-    return roles.map((role) => {
-      const entry = entries.find(
-        (item) => item.role_id === role.id
-      );
+  const roleMap = useMemo(() => {
+    return new Map(
+      roles.map((role) => [
+        role.name.trim().toLowerCase(),
+        role,
+      ])
+    );
+  }, [roles]);
 
-      const displayAssignedName = entry?.volunteer_id
-        ? volunteerMap.get(entry.volunteer_id) || null
-        : null;
+  const entryByRoleId = useMemo(() => {
+    const map = new Map<string, ScheduleEntry>();
+
+    for (const entry of entries) {
+      map.set(entry.role_id, entry);
+    }
+
+    return map;
+  }, [entries]);
+
+  /*
+   * ---------------------------------------------------------
+   * COMPACT WEEKLY ROSTER
+   * ---------------------------------------------------------
+   */
+
+  const displayGroups = useMemo(() => {
+    return DISPLAY_GROUPS.map((group) => {
+      const positions = group.roleNames.map((roleName) => {
+        const role =
+          roleMap.get(roleName.toLowerCase()) ?? null;
+
+        const entry = role
+          ? entryByRoleId.get(role.id) ?? null
+          : null;
+
+        const assignedName = entry?.volunteer_id
+          ? volunteerMap.get(entry.volunteer_id) ?? null
+          : null;
+
+        return {
+          roleName,
+          role,
+          entry,
+          assignedName,
+        };
+      });
 
       return {
-        roleId: role.id,
-        roleName: role.name,
-        icon: getRoleIcon(role.name),
-        entryId: entry?.id ?? null,
-        published: entry?.published ?? false,
-        volunteerId: entry?.volunteer_id ?? null,
-        assignedName: displayAssignedName,
-        isOpen: !!entry && !entry.volunteer_id,
+        ...group,
+        positions,
       };
     });
-  }, [roles, entries, volunteerMap]);
-
-  const scheduledRows = roleRows.filter(
-    (row) => !!row.entryId
-  );
-
-  const assignedCount = scheduledRows.filter(
-    (row) => !!row.volunteerId
-  ).length;
-
-  const openCount = scheduledRows.filter(
-    (row) => row.isOpen
-  ).length;
+  }, [roleMap, entryByRoleId, volunteerMap]);
 
   const dashboardItems =
     getDashboardItems(effectiveRole);
 
-  const summaryRows = useMemo(() => {
-    return sundaySummaryRows.map((summary) => {
-      const names = summary.roleNames.map((roleName) => {
-        const row = roleRows.find(
-          (item) =>
-            item.roleName.trim().toLowerCase() ===
-            roleName.trim().toLowerCase()
-        );
-
-        if (!row?.entryId) return "Open";
-        return row.assignedName || "Open";
-      });
-
-      return {
-        ...summary,
-        names,
-      };
-    });
-  }, [roleRows]);
+  /*
+   * ---------------------------------------------------------
+   * SUNDAY NAVIGATION
+   * ---------------------------------------------------------
+   */
 
   function goPreviousSunday() {
     if (isFirstSunday) return;
@@ -722,6 +720,12 @@ export default function HomePage() {
   function goToUpcomingSunday() {
     setSelectedSunday(firstSunday);
   }
+
+  /*
+   * ---------------------------------------------------------
+   * CLAIM OPEN ROLE
+   * ---------------------------------------------------------
+   */
 
   async function claimRole(
     entryId: string,
@@ -843,21 +847,26 @@ export default function HomePage() {
 
   return (
     <main className="min-h-screen bg-stone-50">
+      {/*
+       * -------------------------------------------------------
+       * INTRO
+       * -------------------------------------------------------
+       */}
+
       <section className="border-b border-stone-200 bg-white">
-        <div className="mx-auto max-w-6xl px-6 py-10">
-          <div className="rounded-2xl border border-stone-200 bg-white p-8 shadow-sm">
+        <div className="mx-auto max-w-6xl px-6 py-8">
+          <div className="rounded-2xl border border-stone-200 bg-white p-7 shadow-sm">
             <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-700">
               Calvary Call Sheet
             </p>
 
-            <h1 className="mt-3 text-4xl font-bold tracking-tight text-gray-900 sm:text-5xl">
-              Sunday serving schedule
+            <h1 className="mt-2 text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
+              Serving together at Calvary
             </h1>
 
-            <p className="mt-4 max-w-2xl text-lg text-gray-700">
-              View upcoming service schedules, claim open
-              positions, and access the tools available for your
-              role.
+            <p className="mt-3 max-w-2xl text-base text-gray-700">
+              See who is serving, find open positions, and
+              manage your own schedule and availability.
             </p>
 
             {authError ? (
@@ -886,15 +895,15 @@ export default function HomePage() {
               </div>
             ) : (
               <div className="mt-5 rounded-lg bg-stone-100 px-4 py-3 text-sm text-stone-700">
-                Viewing as guest. Sign in to see your
-                dashboard.
+                Viewing as guest. Sign in to see the serving
+                schedule and your tools.
               </div>
             )}
           </div>
         </div>
       </section>
 
-      <section className="mx-auto max-w-6xl px-6 py-10">
+      <section className="mx-auto max-w-6xl px-6 py-8">
         {!authLoaded ? null : !isSignedIn ? (
           <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-stone-200">
             <h2 className="text-xl font-semibold text-gray-900">
@@ -902,8 +911,8 @@ export default function HomePage() {
             </h2>
 
             <p className="mt-2 text-sm text-gray-700">
-              Sign in to view the schedule, availability tools,
-              and role-specific actions.
+              Sign in to view the serving schedule,
+              availability tools, and role-specific actions.
             </p>
 
             <Link
@@ -915,41 +924,123 @@ export default function HomePage() {
           </div>
         ) : (
           <div className="space-y-8">
+            {/*
+             * -------------------------------------------------
+             * WEEKLY SERVING ROSTER
+             * -------------------------------------------------
+             */}
 
             <section className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-stone-200">
-              <div className="border-b border-stone-200 bg-stone-50 px-6 py-5">
-                <p className="text-sm font-semibold uppercase tracking-[0.15em] text-amber-700">
-                  This Sunday at Calvary
-                </p>
+              <div className="border-b border-stone-200 px-6 py-5">
+                <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-bold uppercase tracking-[0.18em] text-amber-700">
+                      {isFirstSunday
+                        ? "This Sunday at Calvary"
+                        : "Sunday at Calvary"}
+                    </p>
 
-                <h2 className="mt-1 text-2xl font-bold text-gray-900">
-                  {prettyDate(selectedSunday)}
-                </h2>
+                    <h2 className="mt-1 text-2xl font-bold text-gray-900">
+                      {prettyDate(selectedSunday)}
+                    </h2>
 
-                <p className="mt-1 text-sm text-gray-600">
-                  Your serving team for this service.
-                </p>
+                    <p className="mt-1 text-sm text-gray-600">
+                      Your serving team for this service.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={goPreviousSunday}
+                      disabled={isFirstSunday}
+                      className="rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm font-medium text-gray-800 hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-35"
+                    >
+                      ← Previous
+                    </button>
+
+                    {!isFirstSunday ? (
+                      <button
+                        type="button"
+                        onClick={goToUpcomingSunday}
+                        className="rounded-lg px-3 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-50"
+                      >
+                        Upcoming
+                      </button>
+                    ) : null}
+
+                    <button
+                      type="button"
+                      onClick={goNextSunday}
+                      className="rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm font-medium text-gray-800 hover:bg-stone-50"
+                    >
+                      Next →
+                    </button>
+                  </div>
+                </div>
               </div>
 
+              {homeError ? (
+                <div className="m-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {homeError}
+                </div>
+              ) : null}
+
+              {claimError ? (
+                <div className="m-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {claimError}
+                </div>
+              ) : null}
+
+              {claimMessage ? (
+                <div className="m-5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
+                  {claimMessage}
+                </div>
+              ) : null}
+
               {homeLoading ? (
-                <div className="p-6 text-sm text-gray-600">
+                <div className="px-6 py-10 text-sm text-gray-600">
                   Loading serving team...
                 </div>
               ) : entries.length === 0 ? (
-                <div className="p-6 text-sm text-gray-600">
-                  No schedule is available for this Sunday yet.
+                <div className="px-6 py-10">
+                  <p className="font-medium text-gray-900">
+                    No schedule has been published for this
+                    Sunday yet.
+                  </p>
+
+                  {canSeeDraftSchedules ? (
+                    <p className="mt-1 text-sm text-gray-600">
+                      There are no schedule rows for this date
+                      yet.
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-sm text-gray-600">
+                      Check back later or try another Sunday.
+                    </p>
+                  )}
                 </div>
               ) : (
                 <div className="grid md:grid-cols-2">
-                  {summaryRows.map((row, index) => {
+                  {displayGroups.map((group, index) => {
+                    const names = group.positions.map(
+                      (position) =>
+                        position.assignedName || "Open"
+                    );
+
                     const hasOpenPosition =
-                      row.names.includes("Open");
+                      group.positions.some(
+                        (position) =>
+                          !!position.entry &&
+                          !position.entry.volunteer_id
+                      );
 
                     return (
                       <div
-                        key={row.label}
-                        className={`flex items-start gap-4 border-stone-200 px-6 py-4 ${
-                          index < summaryRows.length - 2
+                        key={group.label}
+                        className={`border-stone-200 px-6 py-4 ${
+                          index <
+                          displayGroups.length - 2
                             ? "border-b"
                             : ""
                         } ${
@@ -958,192 +1049,101 @@ export default function HomePage() {
                             : ""
                         }`}
                       >
-                        <div
-                          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-stone-100 text-xl"
-                          aria-hidden="true"
-                        >
-                          {row.icon}
-                        </div>
-
-                        <div className="min-w-0">
-                          <div className="text-sm font-semibold text-gray-900">
-                            {row.label}
+                        <div className="flex items-start gap-4">
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-stone-100 text-xl">
+                            {group.icon}
                           </div>
 
-                          <div
-                            className={`mt-1 text-sm ${
-                              hasOpenPosition
-                                ? "font-medium text-amber-700"
-                                : "text-gray-700"
-                            }`}
-                          >
-                            {row.names.join(", ")}
+                          <div className="min-w-0 flex-1">
+                            <div className="font-semibold text-gray-900">
+                              {group.label}
+                            </div>
+
+                            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                              {group.positions.map(
+                                (position, positionIndex) => {
+                                  const entry =
+                                    position.entry;
+
+                                  const isOpen =
+                                    !!entry &&
+                                    !entry.volunteer_id;
+
+                                  const canClaimThis =
+                                    canClaim &&
+                                    isOpen &&
+                                    entry.published;
+
+                                  const isClaiming =
+                                    claimingEntryId ===
+                                    entry?.id;
+
+                                  return (
+                                    <span
+                                      key={
+                                        position.roleName
+                                      }
+                                      className="inline-flex items-center"
+                                    >
+                                      {positionIndex >
+                                      0 ? (
+                                        <span className="mr-2 text-stone-400">
+                                          •
+                                        </span>
+                                      ) : null}
+
+                                      {position.assignedName ? (
+                                        <span className="text-gray-700">
+                                          {
+                                            position.assignedName
+                                          }
+                                        </span>
+                                      ) : canClaimThis ? (
+                                        <button
+                                          type="button"
+                                          disabled={
+                                            isClaiming
+                                          }
+                                          onClick={() =>
+                                            claimRole(
+                                              entry.id,
+                                              position.roleName
+                                            )
+                                          }
+                                          className="font-semibold text-amber-700 hover:text-amber-800 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                          {isClaiming
+                                            ? "Claiming..."
+                                            : "Open — Claim"}
+                                        </button>
+                                      ) : (
+                                        <span
+                                          className={
+                                            isOpen
+                                              ? "text-amber-700"
+                                              : "text-stone-400"
+                                          }
+                                        >
+                                          {isOpen
+                                            ? "Open"
+                                            : "—"}
+                                        </span>
+                                      )}
+                                    </span>
+                                  );
+                                }
+                              )}
+                            </div>
+
+                            {hasOpenPosition &&
+                            canClaim ? (
+                              <div className="sr-only">
+                                Open positions may be
+                                claimed.
+                              </div>
+                            ) : null}
                           </div>
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </section>
-
-            <section className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-stone-200">
-              <div className="mb-6 flex flex-col gap-3 border-b border-stone-200 pb-5 sm:flex-row sm:items-center sm:justify-between">
-                <button
-                  type="button"
-                  onClick={goPreviousSunday}
-                  disabled={isFirstSunday}
-                  className="rounded-lg border border-stone-300 bg-white px-4 py-2 text-sm font-medium text-gray-800 shadow-sm hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  ← Previous Sunday
-                </button>
-
-                {!isFirstSunday ? (
-                  <button
-                    type="button"
-                    onClick={goToUpcomingSunday}
-                    className="text-sm font-medium text-emerald-700 hover:text-emerald-800"
-                  >
-                    Return to upcoming Sunday
-                  </button>
-                ) : (
-                  <span className="text-sm font-medium text-stone-500">
-                    Upcoming Sunday
-                  </span>
-                )}
-
-                <button
-                  type="button"
-                  onClick={goNextSunday}
-                  className="rounded-lg border border-stone-300 bg-white px-4 py-2 text-sm font-medium text-gray-800 shadow-sm hover:bg-stone-50"
-                >
-                  Next Sunday →
-                </button>
-              </div>
-
-              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                <div>
-                  <h2 className="text-2xl font-semibold text-gray-900">
-                    {prettyDate(selectedSunday)} Schedule
-                  </h2>
-
-                  <p className="mt-2 text-sm text-gray-600">
-                    {isFirstSunday
-                      ? "This is the schedule for the upcoming Sunday."
-                      : "You are viewing a future Sunday."}
-                  </p>
-
-                  {canClaim ? (
-                    <p className="mt-2 text-sm text-gray-600">
-                      Open positions may be claimed directly
-                      from this schedule.
-                    </p>
-                  ) : null}
-                </div>
-
-                <div className="rounded-xl bg-stone-100 px-4 py-3 text-sm text-gray-700">
-                  <div className="font-medium">
-                    {assignedCount} of{" "}
-                    {scheduledRows.length} roles filled
-                  </div>
-
-                  <div className="mt-1 text-gray-600">
-                    {openCount} open
-                  </div>
-                </div>
-              </div>
-
-              {homeError ? (
-                <div className="mt-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                  {homeError}
-                </div>
-              ) : null}
-
-              {claimError ? (
-                <div className="mt-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                  {claimError}
-                </div>
-              ) : null}
-
-              {claimMessage ? (
-                <div className="mt-5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
-                  {claimMessage}
-                </div>
-              ) : null}
-
-              {homeLoading ? (
-                <div className="mt-6 text-sm text-gray-600">
-                  Loading schedule...
-                </div>
-              ) : entries.length === 0 ? (
-                <div className="mt-6 rounded-xl border border-stone-200 bg-stone-50 p-5">
-                  <p className="font-medium text-gray-900">
-                    No schedule published for this Sunday yet.
-                  </p>
-
-                  <p className="mt-1 text-sm text-gray-600">
-                    Try another Sunday using the buttons above.
-                  </p>
-                </div>
-              ) : (
-                <div className="mt-6 grid gap-3 md:grid-cols-2">
-                  {scheduledRows.map((row) => {
-                    const isClaiming =
-                      claimingEntryId === row.entryId;
-
-                    const showClaimButton =
-                      canClaim &&
-                      row.isOpen &&
-                      row.published &&
-                      !!row.entryId;
-
-                    return (
-                      <div
-                        key={row.roleId}
-                        className="flex items-center justify-between gap-4 rounded-xl border border-stone-200 px-4 py-3"
-                      >
-                        <div className="flex min-w-0 items-center gap-3">
-                          <span
-                            className="text-xl"
-                            aria-hidden="true"
-                          >
-                            {row.icon}
-                          </span>
-
-                          <span className="truncate font-medium text-gray-900">
-                            {row.roleName}
-                          </span>
-                        </div>
-
-                        {showClaimButton ? (
-                          <button
-                            type="button"
-                            disabled={isClaiming}
-                            onClick={() =>
-                              claimRole(
-                                row.entryId!,
-                                row.roleName
-                              )
-                            }
-                            className="shrink-0 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            {isClaiming
-                              ? "Claiming..."
-                              : "Claim"}
-                          </button>
-                        ) : (
-                          <div
-                            className={`shrink-0 text-sm font-medium ${
-                              row.isOpen
-                                ? "text-amber-700"
-                                : "text-emerald-700"
-                            }`}
-                          >
-                            {row.isOpen
-                              ? "Open"
-                              : row.assignedName}
-                          </div>
-                        )}
                       </div>
                     );
                   })}
@@ -1151,12 +1151,18 @@ export default function HomePage() {
               )}
 
               {canSeeDraftSchedules ? (
-                <div className="mt-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                  Admin view: draft and published schedule rows
-                  may be visible here.
+                <div className="border-t border-stone-200 bg-amber-50 px-6 py-3 text-xs text-amber-800">
+                  Admin/leader view: draft schedule entries
+                  may also be visible.
                 </div>
               ) : null}
             </section>
+
+            {/*
+             * -------------------------------------------------
+             * NEXT ACTIONS
+             * -------------------------------------------------
+             */}
 
             <section>
               <div>
