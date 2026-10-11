@@ -9,18 +9,32 @@ type Role = { id: string; name: string; active: boolean };
 type Volunteer = { id: string; name: string; public_name: string | null };
 type CurrentVolunteer = Volunteer & { user_id: string | null; email: string | null; active: boolean };
 type VolunteerRole = { volunteer_id: string; role_id: string };
-type ScheduleEntry = { id: string; date: string; role_id: string; volunteer_id: string | null; status: string | null; published: boolean; template_id: string | null };
+type ScheduleEntry = {
+  id: string;
+  date: string;
+  role_id: string;
+  volunteer_id: string | null;
+  status: string | null;
+  published: boolean;
+  template_id: string | null;
+  confirmed_at: string | null;
+};
 type ServiceTemplate = { id: string; name: string };
 type Blackout = { id: string; volunteer_id: string; date: string; note: string | null; is_hard: boolean };
 type DashboardItem = { title: string; description: string; href: string; buttonText: string };
 type DisplayGroup = { label: string; icon: string; roleNames: string[] };
 type ServiceGroup = { key: string; templateId: string | null; templateName: string; entries: ScheduleEntry[] };
-type DisplayPosition = { roleName: string; role: Role | null; entry: ScheduleEntry | null; assignedName: string | null };
+type DisplayPosition = { roleName: string; entry: ScheduleEntry | null; assignedName: string | null };
+
+const ENTRY_FIELDS = "id, date, role_id, volunteer_id, status, published, template_id, confirmed_at";
 
 function withTimeout<T>(promise: PromiseLike<T>, label: string, ms = 8000): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms);
-    Promise.resolve(promise).then((value) => { clearTimeout(timer); resolve(value); }).catch((error) => { clearTimeout(timer); reject(error); });
+    Promise.resolve(promise).then(
+      value => { clearTimeout(timer); resolve(value); },
+      error => { clearTimeout(timer); reject(error); },
+    );
   });
 }
 function addDays(input: Date, days: number) { const date = new Date(input); date.setDate(date.getDate() + days); return date; }
@@ -91,7 +105,6 @@ export default function HomePage() {
   const canSeeDraftSchedules = effectiveRole === "admin" || effectiveRole === "ministry_leader";
   const canClaim = effectiveRole === "volunteer" && !!currentVolunteer;
   const isFirstSunday = selectedSundayStr === toYmd(firstSunday);
-  const todayStr = toYmd(new Date());
 
   useEffect(() => {
     let isMounted = true;
@@ -116,7 +129,7 @@ export default function HomePage() {
           const byEmail = await withTimeout(supabase.from("volunteers").select("id, user_id, name, public_name, email, active").ilike("email", user.email.trim().toLowerCase()).eq("active", true).maybeSingle(), "Home volunteer email lookup");
           if (!isMounted) return;
           if (byEmail.error) console.error("Home volunteer email lookup failed:", byEmail.error);
-          else volunteer = (byEmail.data as CurrentVolunteer | null) ?? null;
+          else if (byEmail.data && (!byEmail.data.user_id || byEmail.data.user_id === user.id)) volunteer = byEmail.data as CurrentVolunteer;
         }
         setCurrentVolunteer(volunteer);
         if (volunteer) {
@@ -156,7 +169,7 @@ export default function HomePage() {
         if (!isMounted) return;
         if (templatesRes.error) throw new Error(`Templates query failed: ${templatesRes.error.message}`);
         setTemplates((templatesRes.data as ServiceTemplate[]) ?? []);
-        let query = supabase.from("schedule_entries").select("id, date, role_id, volunteer_id, status, published, template_id").eq("date", selectedSundayStr);
+        let query = supabase.from("schedule_entries").select(ENTRY_FIELDS).eq("date", selectedSundayStr);
         if (!canSeeDraftSchedules) query = query.eq("published", true);
         const entriesRes = await withTimeout(query, "Home schedule entries query");
         if (!isMounted) return;
@@ -184,7 +197,7 @@ export default function HomePage() {
     async function loadUpcoming() {
       setUpcomingLoading(true); setUpcomingError("");
       try {
-        const result = await withTimeout(supabase.from("schedule_entries").select("id, date, role_id, volunteer_id, status, published, template_id").eq("volunteer_id", currentVolunteer!.id).eq("published", true).gte("date", toYmd(new Date())).order("date", { ascending: true }).limit(1000), "Upcoming assignments query");
+        const result = await withTimeout(supabase.from("schedule_entries").select(ENTRY_FIELDS).eq("volunteer_id", currentVolunteer!.id).eq("published", true).gte("date", toYmd(new Date())).order("date", { ascending: true }).limit(1000), "Upcoming assignments query");
         if (!isMounted) return;
         if (result.error) throw new Error(result.error.message);
         setUpcomingEntries((result.data as ScheduleEntry[]) ?? []);
@@ -218,7 +231,7 @@ export default function HomePage() {
   const refreshSchedules = useCallback(() => setRefreshCounter(n => n + 1), []);
 
   async function claimRole(entry: ScheduleEntry, roleName: string) {
-    if (!canClaim || !currentVolunteer) { setActionError("Your account is not linked to an active volunteer profile with volunteer access."); return; }
+    if (!canClaim || !currentVolunteer || !currentVolunteer.user_id) { setActionError("Your account is not linked to an active volunteer profile with volunteer access."); return; }
     setActionMessage(""); setActionError("");
     if (!approvedRoleIds.has(entry.role_id)) { setActionError(`You are not currently approved to serve in ${roleName}.`); return; }
     if (!entry.published || entry.volunteer_id) { setActionError("This position is no longer available to claim."); refreshSchedules(); return; }
@@ -235,7 +248,7 @@ export default function HomePage() {
       const qualification = await withTimeout(supabase.from("volunteer_roles").select("volunteer_id, role_id").eq("volunteer_id", currentVolunteer.id).eq("role_id", entry.role_id).maybeSingle(), "Claim qualification check");
       if (qualification.error) throw new Error(`Could not verify role approval: ${qualification.error.message}`);
       if (!qualification.data) { setVolunteerRoles(current => current.filter(item => item.role_id !== entry.role_id)); throw new Error(`You are not currently approved to serve in ${roleName}.`); }
-      const { data, error } = await withTimeout(supabase.from("schedule_entries").update({ volunteer_id: currentVolunteer.id, status: "assigned" }).eq("id", entry.id).eq("published", true).is("volunteer_id", null).select("id, date, role_id, volunteer_id, status, published, template_id"), "Claim schedule update");
+      const { data, error } = await withTimeout(supabase.from("schedule_entries").update({ volunteer_id: currentVolunteer.id, status: "assigned" }).eq("id", entry.id).eq("published", true).is("volunteer_id", null).select(ENTRY_FIELDS), "Claim schedule update");
       if (error) throw new Error(error.message);
       if (!data?.length) throw new Error("This position is no longer available. Another volunteer may have claimed it first.");
       const claimed = data[0] as ScheduleEntry;
@@ -259,8 +272,7 @@ export default function HomePage() {
     if (hoursUntilDate < 48 && !window.confirm("IMPORTANT: This service is less than 48 hours away (or is today). Releasing now could leave the team short-staffed. Please contact your team lead directly as well.\n\nRelease anyway?")) return;
     setBusyEntryId(entry.id);
     try {
-      // Conditional update: only the currently assigned volunteer can release this exact row.
-      const { data, error } = await withTimeout(supabase.from("schedule_entries").update({ volunteer_id: null, status: "open" }).eq("id", entry.id).eq("published", true).eq("volunteer_id", currentVolunteer.id).select("id, date, role_id, volunteer_id, status, published, template_id"), "Release schedule update");
+      const { data, error } = await withTimeout(supabase.from("schedule_entries").update({ volunteer_id: null, status: "open" }).eq("id", entry.id).eq("published", true).eq("volunteer_id", currentVolunteer.id).select(ENTRY_FIELDS), "Release schedule update");
       if (error) throw new Error(error.message);
       if (!data?.length) throw new Error("This assignment could not be released. It may already have changed, or your account may not have permission to release it.");
       const released = data[0] as ScheduleEntry;
@@ -270,6 +282,41 @@ export default function HomePage() {
       refreshSchedules();
     } catch (err) { console.error("Release role error:", err); setActionError(err instanceof Error ? err.message : "Could not release this assignment."); refreshSchedules(); }
     finally { setBusyEntryId(null); }
+  }
+
+  async function confirmAssignment(entry: ScheduleEntry) {
+    if (!currentVolunteer || !isSignedIn || entry.volunteer_id !== currentVolunteer.id || !entry.published) {
+      setActionError("This assignment cannot be confirmed from your account."); return;
+    }
+    if (entry.confirmed_at) return;
+    const roleName = roleIdMap.get(entry.role_id) ?? "Serving role";
+    if (!window.confirm(`Confirm that you can serve in ${roleName} on ${prettyDate(fromYmd(entry.date))}?`)) return;
+    setActionMessage(""); setActionError(""); setBusyEntryId(entry.id);
+    try {
+      const { data, error } = await withTimeout(
+        supabase.rpc("confirm_my_assignment", { p_entry_id: entry.id }),
+        "Confirm assignment",
+      );
+      if (error) throw new Error(error.message);
+      // The RPC may return void, a boolean, or a record depending on its SQL definition.
+      // Always re-read the authoritative row before showing a successful confirmation.
+      const { data: updated, error: readError } = await withTimeout(
+        supabase.from("schedule_entries").select(ENTRY_FIELDS).eq("id", entry.id).eq("volunteer_id", currentVolunteer.id).eq("published", true).maybeSingle(),
+        "Verify assignment confirmation",
+      );
+      if (readError) throw new Error(readError.message);
+      if (!updated?.confirmed_at) throw new Error("The assignment was not marked confirmed. Please try again or contact an administrator.");
+      const confirmed = updated as ScheduleEntry;
+      setUpcomingEntries(current => current.map(item => item.id === confirmed.id ? confirmed : item));
+      setEntries(current => current.map(item => item.id === confirmed.id ? confirmed : item));
+      setActionMessage(`Confirmed: ${roleName} on ${prettyDate(fromYmd(entry.date))}. Thank you!`);
+      refreshSchedules();
+      void data;
+    } catch (err) {
+      console.error("Confirm assignment error:", err);
+      setActionError(err instanceof Error ? err.message : "Could not confirm this assignment.");
+      refreshSchedules();
+    } finally { setBusyEntryId(null); }
   }
 
   function shouldShowPosition(position: DisplayPosition) {
@@ -287,7 +334,7 @@ export default function HomePage() {
       const role = roleMap.get(roleName.toLowerCase()) ?? null;
       const entry = role ? entryByRoleId.get(role.id) ?? null : null;
       const assignedName = entry?.volunteer_id ? volunteerMap.get(entry.volunteer_id) ?? null : null;
-      return { roleName, role, entry, assignedName };
+      return { roleName, entry, assignedName };
     }) }));
     return <div key={service.key}>
       {services.length > 1 ? <div className="border-b border-stone-200 bg-stone-50 px-6 py-3"><div className="text-sm font-semibold text-gray-900">{service.templateName}</div></div> : null}
@@ -335,12 +382,19 @@ export default function HomePage() {
         {actionError ? <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{actionError}</div> : null}
         {actionMessage ? <div role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">{actionMessage}</div> : null}
         {currentVolunteer ? <section className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-stone-200">
-          <div className="border-b border-stone-200 px-6 py-5"><h2 className="text-xl font-bold text-gray-900">My Upcoming Assignments</h2><p className="mt-1 text-sm text-gray-600">Your published commitments, across all upcoming services. Release an individual assignment if you can no longer serve.</p></div>
+          <div className="border-b border-stone-200 px-6 py-5"><h2 className="text-xl font-bold text-gray-900">My Upcoming Assignments</h2><p className="mt-1 text-sm text-gray-600">Review and confirm assignments made for you. You can also release an individual assignment if you can no longer serve.</p></div>
           {upcomingError ? <div role="alert" className="m-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{upcomingError}</div> : null}
           {upcomingLoading ? <div className="px-6 py-6 text-sm text-gray-600">Loading your assignments...</div> : upcomingEntries.length === 0 && !upcomingError ? <div className="px-6 py-6 text-sm text-gray-600">You have no upcoming published assignments.</div> :
             <div className="divide-y divide-stone-200">{upcomingEntries.map(entry => <div key={entry.id} className="flex flex-col gap-3 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
-              <div><div className="font-semibold text-gray-900">{prettyDate(fromYmd(entry.date))}</div><div className="mt-1 text-sm text-gray-700">{roleIdMap.get(entry.role_id) ?? "Serving role"} · {entry.template_id ? templateMap.get(entry.template_id) ?? "Sunday Service" : "Legacy Schedule"}</div></div>
-              <button type="button" disabled={!!busyEntryId} onClick={() => releaseRole(entry)} className="w-fit rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50">{busyEntryId === entry.id ? "Releasing..." : "Release"}</button>
+              <div>
+                <div className="font-semibold text-gray-900">{prettyDate(fromYmd(entry.date))}</div>
+                <div className="mt-1 text-sm text-gray-700">{roleIdMap.get(entry.role_id) ?? "Serving role"} · {entry.template_id ? templateMap.get(entry.template_id) ?? "Sunday Service" : "Legacy Schedule"}</div>
+                <div className="mt-2 text-sm">{entry.confirmed_at ? <span className="font-semibold text-emerald-700">✓ Confirmed</span> : <span className="font-medium text-amber-700">Awaiting your confirmation</span>}</div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {!entry.confirmed_at ? <button type="button" disabled={!!busyEntryId} onClick={() => confirmAssignment(entry)} className="w-fit rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50">{busyEntryId === entry.id ? "Confirming..." : "Confirm Assignment"}</button> : null}
+                <button type="button" disabled={!!busyEntryId} onClick={() => releaseRole(entry)} className="w-fit rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50">{busyEntryId === entry.id ? "Working..." : "Release"}</button>
+              </div>
             </div>)}</div>}
         </section> : null}
         <section className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-stone-200">
