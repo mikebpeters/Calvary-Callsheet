@@ -46,6 +46,7 @@ type ScheduleEntry = {
   status: string | null;
   published: boolean;
   template_id: string | null;
+  confirmed_at: string | null;
 };
 
 type VolunteerBlackout = {
@@ -309,7 +310,7 @@ export default function PlannerPage() {
       const { data: entriesData, error: entriesError } = await supabase
         .from("schedule_entries")
         .select(
-          "id, date, role_id, volunteer_id, status, published, template_id"
+          "id, date, role_id, volunteer_id, status, published, template_id, confirmed_at"
         )
         .gte("date", plannerRange.start)
         .lte("date", plannerRange.end);
@@ -323,7 +324,7 @@ export default function PlannerPage() {
       const { data: workloadData, error: workloadError } = await supabase
         .from("schedule_entries")
         .select(
-          "id, date, role_id, volunteer_id, status, published, template_id"
+          "id, date, role_id, volunteer_id, status, published, template_id, confirmed_at"
         )
         .gte("date", workloadRange.start)
         .lte("date", workloadRange.end)
@@ -825,7 +826,7 @@ export default function PlannerPage() {
       const { data: existingData, error: existingError } = await supabase
         .from("schedule_entries")
         .select(
-          "id, date, role_id, volunteer_id, status, published, template_id"
+          "id, date, role_id, volunteer_id, status, published, template_id, confirmed_at"
         )
         .eq("date", templateDate)
         .eq("template_id", selectedTemplateId)
@@ -868,7 +869,7 @@ export default function PlannerPage() {
         .from("schedule_entries")
         .insert(rowsToInsert)
         .select(
-          "id, date, role_id, volunteer_id, status, published, template_id"
+          "id, date, role_id, volunteer_id, status, published, template_id, confirmed_at"
         );
 
       if (insertError) {
@@ -1238,6 +1239,7 @@ export default function PlannerPage() {
       ...entry,
       volunteer_id: normalizedVolunteerId,
       status: normalizedVolunteerId ? "assigned" : null,
+      confirmed_at: null,
     };
 
     setEntries((current) =>
@@ -1266,6 +1268,7 @@ export default function PlannerPage() {
         .update({
           volunteer_id: normalizedVolunteerId,
           status: normalizedVolunteerId ? "assigned" : null,
+          confirmed_at: null,
         })
         .eq("id", entry.id);
 
@@ -1827,6 +1830,20 @@ export default function PlannerPage() {
                                           </option>
                                         ))}
                                       </select>
+
+                                      {entry.volunteer_id && !isSaving ? (
+                                        <div
+                                          className={`text-xs font-medium ${
+                                            entry.confirmed_at
+                                              ? "text-emerald-700"
+                                              : "text-amber-700"
+                                          }`}
+                                        >
+                                          {entry.confirmed_at
+                                            ? "✓ Confirmed"
+                                            : "Awaiting confirmation"}
+                                        </div>
+                                      ) : null}
 
                                       {roleVolunteers.length === 0 &&
                                       !entry.volunteer_id ? (
