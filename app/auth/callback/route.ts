@@ -1,23 +1,56 @@
-import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
 
-export async function GET(request: Request) {
+import { NextRequest, NextResponse } from "next/server";
+import { createServerClient } from "@supabase/ssr";
+
+export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url);
   const code = searchParams.get("code");
-  const next = searchParams.get("next") ?? "/";
+  const requestedNext = searchParams.get("next") ?? "/";
+  const next =
+    requestedNext.startsWith("/") && !requestedNext.startsWith("//")
+      ? requestedNext
+      : "/";
+
+  const redirectUrl = new URL(next, origin);
+  const response = NextResponse.redirect(redirectUrl);
 
   if (!code) {
-    return NextResponse.redirect(`${origin}/login?error=missing_code`);
+    return NextResponse.redirect(
+      new URL("/login?error=missing_code", origin)
+    );
   }
 
-  const supabase = await createClient();
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return request.cookies.getAll();
+        },
+        setAll(cookiesToSet) {
+          cookiesToSet.forEach(({ name, value }) => {
+            request.cookies.set(name, value);
+          });
 
-  const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+          cookiesToSet.forEach(({ name, value, options }) => {
+            response.cookies.set(name, value, options);
+          });
+        },
+      },
+    }
+  );
+
+  const { error: exchangeError } =
+    await supabase.auth.exchangeCodeForSession(code);
 
   if (exchangeError) {
     console.error("Auth code exchange failed:", exchangeError);
     return NextResponse.redirect(
-      `${origin}/login?error=${encodeURIComponent(exchangeError.message)}`
+      new URL(
+        `/login?error=${encodeURIComponent(exchangeError.message)}`,
+        origin
+      )
     );
   }
 
@@ -29,9 +62,12 @@ export async function GET(request: Request) {
   if (userError || !user) {
     console.error("Auth user lookup failed:", userError);
     return NextResponse.redirect(
-      `${origin}/login?error=${encodeURIComponent(
-        userError?.message ?? "No user after login"
-      )}`
+      new URL(
+        `/login?error=${encodeURIComponent(
+          userError?.message ?? "No user after login"
+        )}`,
+        origin
+      )
     );
   }
 
@@ -41,34 +77,43 @@ export async function GET(request: Request) {
     user.email?.split("@")[0] ||
     "User";
 
-  const { data: existingProfile, error: profileLookupError } = await supabase
-    .from("profiles")
-    .select("id, role")
-    .eq("id", user.id)
-    .maybeSingle();
+  const { data: existingProfile, error: profileLookupError } =
+    await supabase
+      .from("profiles")
+      .select("id, role")
+      .eq("id", user.id)
+      .maybeSingle();
 
   if (profileLookupError) {
     console.error("Profile lookup failed:", profileLookupError);
     return NextResponse.redirect(
-      `${origin}/login?error=${encodeURIComponent(
-        `Profile lookup failed: ${profileLookupError.message}`
-      )}`
+      new URL(
+        `/login?error=${encodeURIComponent(
+          `Profile lookup failed: ${profileLookupError.message}`
+        )}`,
+        origin
+      )
     );
   }
 
   if (!existingProfile) {
-    const { error: insertProfileError } = await supabase.from("profiles").insert({
-      id: user.id,
-      full_name: fullName,
-      role: "volunteer",
-    });
+    const { error: insertProfileError } = await supabase
+      .from("profiles")
+      .insert({
+        id: user.id,
+        full_name: fullName,
+        role: "volunteer",
+      });
 
     if (insertProfileError) {
       console.error("Profile insert failed:", insertProfileError);
       return NextResponse.redirect(
-        `${origin}/login?error=${encodeURIComponent(
-          `Profile insert failed: ${insertProfileError.message}`
-        )}`
+        new URL(
+          `/login?error=${encodeURIComponent(
+            `Profile insert failed: ${insertProfileError.message}`
+          )}`,
+          origin
+        )
       );
     }
   } else {
@@ -83,34 +128,46 @@ export async function GET(request: Request) {
     if (updateProfileError) {
       console.error("Profile update failed:", updateProfileError);
       return NextResponse.redirect(
-        `${origin}/login?error=${encodeURIComponent(
-          `Profile update failed: ${updateProfileError.message}`
-        )}`
+        new URL(
+          `/login?error=${encodeURIComponent(
+            `Profile update failed: ${updateProfileError.message}`
+          )}`,
+          origin
+        )
       );
     }
   }
 
   if (user.email) {
-    const { data: linkedVolunteer, error: linkedVolunteerError } = await supabase
-      .from("volunteers")
-      .select("id, user_id")
-      .eq("user_id", user.id)
-      .maybeSingle();
+    const { data: linkedVolunteer, error: linkedVolunteerError } =
+      await supabase
+        .from("volunteers")
+        .select("id, user_id")
+        .eq("user_id", user.id)
+        .maybeSingle();
 
     if (linkedVolunteerError) {
-      console.error("Linked volunteer lookup failed:", linkedVolunteerError);
+      console.error(
+        "Linked volunteer lookup failed:",
+        linkedVolunteerError
+      );
     }
 
     if (!linkedVolunteer && !linkedVolunteerError) {
-      const { data: emailMatchedVolunteer, error: emailMatchedVolunteerError } =
-        await supabase
-          .from("volunteers")
-          .select("id, user_id, email")
-          .ilike("email", user.email)
-          .maybeSingle();
+      const {
+        data: emailMatchedVolunteer,
+        error: emailMatchedVolunteerError,
+      } = await supabase
+        .from("volunteers")
+        .select("id, user_id, email")
+        .ilike("email", user.email)
+        .maybeSingle();
 
       if (emailMatchedVolunteerError) {
-        console.error("Email matched volunteer lookup failed:", emailMatchedVolunteerError);
+        console.error(
+          "Email matched volunteer lookup failed:",
+          emailMatchedVolunteerError
+        );
       }
 
       if (emailMatchedVolunteer && !emailMatchedVolunteer.user_id) {
@@ -120,11 +177,14 @@ export async function GET(request: Request) {
           .eq("id", emailMatchedVolunteer.id);
 
         if (volunteerUpdateError) {
-          console.error("Volunteer link update failed:", volunteerUpdateError);
+          console.error(
+            "Volunteer link update failed:",
+            volunteerUpdateError
+          );
         }
       }
     }
   }
 
-  return NextResponse.redirect(`${origin}${next}`);
+  return response;
 }
