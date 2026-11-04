@@ -37,6 +37,36 @@ function withTimeout<T>(
   });
 }
 
+// TEMPORARY AUTHENTICATION DIAGNOSTIC
+// Records event names and cookie presence only.
+// Never records cookie contents, tokens, or email addresses.
+function authCookiePresent(): boolean {
+  if (typeof document === "undefined") return false;
+
+  return document.cookie.split(";").some((cookie) => {
+    const name = cookie.trim().split("=")[0];
+
+    return (
+      name.startsWith("sb-") &&
+      name.includes("-auth-token") &&
+      !name.includes("code-verifier")
+    );
+  });
+}
+
+function authDiagnostic(
+  event: string,
+  hasSession: boolean
+) {
+  console.info("[CALLSHEET AUTH]", {
+    time: new Date().toISOString(),
+    event,
+    sessionPresent: hasSession,
+    cookiePresent: authCookiePresent(),
+    path: window.location.pathname,
+  });
+}
+
 export default function TopNav() {
   const pathname = usePathname();
   const router = useRouter();
@@ -50,13 +80,13 @@ export default function TopNav() {
   const [loading, setLoading] = useState(true);
   const [signingOut, setSigningOut] = useState(false);
 
-  // Prevent stale profile requests from updating the navigation.
   const requestIdRef = useRef(0);
 
-  // AUTHENTICATION AND PROFILE
   useEffect(() => {
     let isMounted = true;
     let lastUserId: string | null = null;
+
+    authDiagnostic("TOPNAV_MOUNTED", false);
 
     function isCurrent(requestId: number) {
       return (
@@ -66,6 +96,8 @@ export default function TopNav() {
     }
 
     function clearUser() {
+      authDiagnostic("TOPNAV_CLEAR_USER", false);
+
       requestIdRef.current += 1;
       lastUserId = null;
 
@@ -150,7 +182,6 @@ export default function TopNav() {
         }
 
         setLoading(false);
-
         await loadUnreadCount(userId, requestId);
       } catch (error) {
         if (!isCurrent(requestId)) return;
@@ -160,7 +191,6 @@ export default function TopNav() {
           error
         );
 
-        // A profile failure does not mean the user signed out.
         setProfile(null);
         setRole(null);
         setLoading(false);
@@ -180,8 +210,6 @@ export default function TopNav() {
         return;
       }
 
-      // A duplicate SIGNED_IN event or a token refresh
-      // should not reload the entire profile.
       if (lastUserId === user.id) {
         setUserEmail(user.email ?? null);
         setLoading(false);
@@ -208,6 +236,8 @@ export default function TopNav() {
       (event, session) => {
         if (!isMounted) return;
 
+        authDiagnostic(event, !!session);
+
         if (event === "SIGNED_OUT") {
           clearUser();
           return;
@@ -224,8 +254,6 @@ export default function TopNav() {
       }
     );
 
-    // Refresh notification counts without checking
-    // the authentication session again.
     function handleNotificationsUpdated() {
       if (!lastUserId) return;
 
@@ -241,6 +269,8 @@ export default function TopNav() {
     );
 
     return () => {
+      authDiagnostic("TOPNAV_UNMOUNTED", false);
+
       isMounted = false;
       requestIdRef.current += 1;
 
@@ -313,6 +343,8 @@ export default function TopNav() {
   }
 
   async function handleSignOut() {
+    authDiagnostic("LOGOUT_BUTTON_CLICKED", true);
+
     try {
       setSigningOut(true);
 
@@ -366,6 +398,7 @@ export default function TopNav() {
                 className="object-contain"
                 priority
               />
+
             </div>
 
             <div className="min-w-0">
